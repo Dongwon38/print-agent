@@ -4,9 +4,11 @@ escpos.USB = require("escpos-usb");
 
 console.log("Initializing USB printer...");
 const device = new escpos.USB(0x04b8, 0x0202); // EPSON TM-T88IV
+// 주석: 새 프린터로 변경 시 VID(0x04b8)와 PID(0x0202)를 새 모델에 맞게 수정하세요. (lsusb 명령어로 확인 가능)
 const printer = new escpos.Printer(device);
 
 const API_URL = "https://dongwonk5.sg-host.com/wp-json/custom/v1";
+// 주석: 새 레스토랑의 WordPress URL로 변경 시 API_URL을 업데이트하세요 (예: "https://newrestaurant.com/wp-json/custom/v1").
 
 async function pollOrders() {
   try {
@@ -52,8 +54,6 @@ async function printOrder(order) {
 
     // 프린터 초기화 및 기본 크기 설정
     printer.font("a").align("ct");
-
-    // 영수증 헤더 (크기 강조)
     printer
       .text(`ORDER #${order.order_number}`)
       .text("----------------------------------------");
@@ -117,8 +117,25 @@ async function printOrder(order) {
     console.log(`Printed order #${order.order_number}`);
   } catch (error) {
     console.error("Print error:", error.message);
+    throw error; // Reprint에서 에러를 상위로 전달
   }
 }
+
+// Reprint 엔드포인트 추가
+app.post('/reprint', async (req, res) => {
+    const { orderId } = req.body;
+    try {
+      // 주석: 새 레스토랑에서 WordPress URL 변경 시 API_URL과 함께 /orders/{orderId} 경로 확인 필요
+      const response = await axios.get(`${API_URL}/orders/${orderId}`);
+      const order = response.data;
+      await printOrder(order);
+      console.log(`Reprinted order #${order.order_number}`);
+      res.status(200).json({ success: true, message: `Order ${order.order_number} reprinted` });
+    } catch (error) {
+      console.error("Reprint error:", error.message);
+      res.status(500).json({ success: false, message: "Failed to reprint order" });
+    }
+  });
 
 async function markOrderAsPrinted(orderId) {
   try {
@@ -134,3 +151,6 @@ async function markOrderAsPrinted(orderId) {
 
 setInterval(pollOrders, 5000);
 pollOrders();
+
+// 주석: 새 레스토랑에서 포트 변경 시 3000을 새 포트 번호로 수정하세요 (예: 4000)
+app.listen(3000, () => console.log('Node server on port 3000'));

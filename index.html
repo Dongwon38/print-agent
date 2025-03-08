@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Print Agent Control</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #log { height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; background: #f9f9f9; }
+        button { padding: 10px 20px; margin: 5px; }
+        .form-group { margin: 10px 0; }
+        #status { font-weight: bold; margin: 10px 0; }
+        #error { color: red; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>Print Agent Control</h1>
+    <div class="form-group">
+        <input id="username" type="text" placeholder="Username" class="p-2 border rounded">
+        <input id="password" type="password" placeholder="Password" class="p-2 border rounded" autocomplete="off">
+        <button onclick="login()">Login</button>
+    </div>
+    <button onclick="startServer()">Start Server</button>
+    <button onclick="stopServer()">Stop Server</button>
+    <div id="status">Server Status: Unknown</div>
+    <div id="error"></div>
+    <h2>Logs</h2>
+    <div id="log"></div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const logDiv = document.getElementById('log');
+        const statusDiv = document.getElementById('status');
+        const errorDiv = document.getElementById('error');
+
+        socket.on('log', (message) => {
+            const p = document.createElement('p');
+            p.textContent = message;
+            logDiv.appendChild(p);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        });
+
+        socket.on('status', (status) => {
+            statusDiv.textContent = `Server Status: ${status}`;
+        });
+
+        socket.on('error', (message) => {
+            errorDiv.textContent = `Error: ${message}`;
+        });
+
+        async function login() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const response = await fetch('/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await response.json();
+            if (data.status === 'success') {
+                document.getElementById('username').value = '';
+                document.getElementById('password').value = '';
+            }
+        }
+
+        async function startServer() {
+            const response = await fetch('/start');
+            await response.json();
+        }
+
+        async function stopServer() {
+            const response = await fetch('/stop');
+            await response.json();
+        }
+    </script>
+</body>
+</html>

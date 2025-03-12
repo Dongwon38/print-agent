@@ -10,9 +10,11 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "axios": "^1.8.1",
+    "axios": "^1.8.3",
     "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
     "escpos": "^3.0.0-alpha.6",
+    "escpos-network": "^3.0.0-alpha.5",
     "escpos-usb": "^3.0.0-alpha.2",
     "express": "^4.21.2",
     "socket.io": "^4.8.1",

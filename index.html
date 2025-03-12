@@ -1,78 +1,128 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Print Agent Control</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        #log { height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; background: #f9f9f9; }
-        button { padding: 10px 20px; margin: 5px; }
-        .form-group { margin: 10px 0; }
-        #status { font-weight: bold; margin: 10px 0; }
-        #error { color: red; margin: 10px 0; }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/x-icon" href="/public/printer.png">
+  <title>WS Print Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-    <h1>Print Agent Control</h1>
-    <div class="form-group">
-        <input id="username" type="text" placeholder="Username" class="p-2 border rounded">
-        <input id="password" type="password" placeholder="Password" class="p-2 border rounded" autocomplete="off">
-        <button onclick="login()">Login</button>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
+  <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-4xl">
+    <h1 class="text-2xl font-bold text-gray-800 mb-6 text-center">WS Print Dashboard</h1>
+
+    <!-- 로그인 폼 -->
+    <div id="login-section" class="mb-6">
+      <h2 class="text-lg font-semibold text-gray-700 mb-2">Login</h2>
+      <form id="login-form" onsubmit="login(event)" class="flex items-center gap-2">
+        <input type="text" id="username" placeholder="Username" class="p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-1/3" />
+        <input type="password" id="password" placeholder="Password" class="p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-1/3" />
+        <button type="submit" id="login-btn" class="bg-blue-500 text-white p-2 rounded-lg hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed w-1/3">Login</button>
+      </form>
+      <p id="login-status" class="text-sm mt-2 text-green-500 hidden">Logged in</p>
+      <p id="login-error" class="text-red-500 text-sm mt-2"></p>
     </div>
-    <button onclick="startServer()">Start Server</button>
-    <button onclick="stopServer()">Stop Server</button>
-    <div id="status">Server Status: Unknown</div>
-    <div id="error"></div>
-    <h2>Logs</h2>
-    <div id="log"></div>
 
-    <script src="/socket.io/socket.io.js"></script>
-    <script>
-        const socket = io();
-        const logDiv = document.getElementById('log');
-        const statusDiv = document.getElementById('status');
-        const errorDiv = document.getElementById('error');
+    <!-- 서버 제어 -->
+    <div class="mb-6">
+      <h2 class="text-lg font-semibold text-gray-700 mb-2">Server Control</h2>
+      <div class="flex items-center gap-4">
+        <button id="startBtn" onclick="startServer()" class="bg-green-500 text-white py-2 px-8 rounded-lg hover:bg-green-600 disabled:bg-gray-400 disabled:cursor-not-allowed">Start</button>
+        <button id="stopBtn" onclick="stopServer()" class="bg-red-500 text-white py-2 px-8 rounded-lg hover:bg-red-600 disabled:bg-gray-400 disabled:cursor-not-allowed">Stop</button>
+        <div class="flex items-center gap-2">
+          <span class="text-gray-700">Status:</span>
+          <span id="status" class="font-semibold">Stopped</span>
+          <div id="status-indicator" class="w-4 h-4 rounded-full bg-gray-400"></div>
+        </div>
+      </div>
+    </div>
 
-        socket.on('log', (message) => {
-            const p = document.createElement('p');
-            p.textContent = message;
-            logDiv.appendChild(p);
-            logDiv.scrollTop = logDiv.scrollHeight;
+    <!-- 로그 -->
+    <div>
+      <h2 class="text-lg font-semibold text-gray-700 mb-2">Logs</h2>
+      <div id="logs" class="h-[calc(100vh-16rem)] overflow-y-auto border border-gray-200 rounded-lg p-4 bg-gray-50 transition-all duration-300"></div>
+    </div>
+  </div>
+
+  <footer class="flex flex-col justify-center mt-4 text-center">
+    <a href="https://wsstudio.ca">Created by Whitespace Studio</a>
+    <a class="text-gray-400 text-sm mt-2" href="https://www.flaticon.com/free-icons/printer" title="printer icons">Printer icons created by smashingstocks - Flaticon</a>
+  </footer>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const logsDiv = document.getElementById("logs");
+    const statusSpan = document.getElementById("status");
+    const statusIndicator = document.getElementById("status-indicator");
+    const loginError = document.getElementById("login-error");
+    const loginStatus = document.getElementById("login-status");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const loginSection = document.getElementById("login-section");
+    const usernameInput = document.getElementById("username");
+    const passwordInput = document.getElementById("password");
+    const loginBtn = document.getElementById("login-btn");
+
+    socket.on("log", (message) => {
+      const logEntry = document.createElement("p");
+      logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      logEntry.className = message.includes("error") || message.includes("failed") ? "text-red-500" : "text-gray-800";
+      logsDiv.appendChild(logEntry);
+      logsDiv.scrollTop = logsDiv.scrollHeight;
+    });
+
+    socket.on("status", (status) => {
+      statusSpan.textContent = status;
+      statusIndicator.className = `w-4 h-4 rounded-full ${status === "Running" ? "bg-green-500" : "bg-gray-400"}`;
+      startBtn.disabled = status === "Running";
+      stopBtn.disabled = status === "Stopped";
+    });
+
+    socket.on("error", (message) => {
+      loginError.textContent = message;
+    });
+
+    socket.on("relogin", (message) => {
+      loginStatus.classList.add("hidden");
+      loginBtn.disabled = false;
+      loginError.textContent = message;
+    });
+
+    async function login(event) {
+      event.preventDefault(); // 엔터키 제출 시 페이지 새로고침 방지
+      const username = usernameInput.value;
+      const password = passwordInput.value;
+      loginError.textContent = "";
+      try {
+        const response = await fetch("/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password }),
         });
-
-        socket.on('status', (status) => {
-            statusDiv.textContent = `Server Status: ${status}`;
-        });
-
-        socket.on('error', (message) => {
-            errorDiv.textContent = `Error: ${message}`;
-        });
-
-        async function login() {
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            const response = await fetch('/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password })
-            });
-            const data = await response.json();
-            if (data.status === 'success') {
-                document.getElementById('username').value = '';
-                document.getElementById('password').value = '';
-            }
+        const result = await response.json();
+        if (result.status === "success") {
+          usernameInput.value = "";
+          passwordInput.value = "";
+          loginStatus.classList.remove("hidden");
+          loginBtn.disabled = true; // 로그인 성공 후 버튼 비활성화
+        } else {
+          loginError.textContent = result.message;
         }
+      } catch (error) {
+        loginError.textContent = "Login request failed";
+      }
+    }
 
-        async function startServer() {
-            const response = await fetch('/start');
-            await response.json();
-        }
+    async function startServer() {
+      await fetch("/start").then((res) => res.json()).then((data) => {
+        if (data.status === "error") loginError.textContent = data.message;
+      });
+    }
 
-        async function stopServer() {
-            const response = await fetch('/stop');
-            await response.json();
-        }
-    </script>
+    async function stopServer() {
+      await fetch("/stop").then((res) => res.json());
+    }
+  </script>
 </body>
 </html>

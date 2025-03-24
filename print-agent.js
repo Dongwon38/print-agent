@@ -243,6 +243,7 @@ async function printOrder(order) {
       .text("-".repeat(33))
       .text("Thank you for your order!")
       .text("Night Owl Cafe")
+      .text("#104-8580 Cambie Rd, Richmond, BC")
       .text("(604) 276-0576")
       .feed(3)
       .cut();

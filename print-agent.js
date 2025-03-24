@@ -101,20 +101,23 @@ async function printOrder(order) {
       device.open((err) => (err ? reject(err) : resolve()));
     });
 
-    printer
+    // 출력 시작 전 프린터 초기화
+    printer.raw(Buffer.from([0x1B, 0x40]))
       .font("a")
       .style("B")
+      .align("lt")
       .feed(2);
 
-    // 주문 번호
+    // 주문 번호 (원시 명령어로 크기 설정)
     printer
-      .size(2, 2)
+      .raw(Buffer.from([0x1D, 0x21, 0x22])) // GS ! 0x22 → 가로 3배, 세로 3배
       .align("ct")
       .text(`ORDER #${order.order_number || "N/A"}`)
-      .size(1, 1)
+      .raw(Buffer.from([0x1D, 0x21, 0x00])) // 크기 초기화
+      .align("lt")
       .text("-".repeat(33));
 
-    // 픽업 시간 (형식 변경)
+    // 픽업 시간
     const orderTime = new Date(order.created_at).toLocaleString("en-US", {
       month: "short",
       day: "numeric",
@@ -164,22 +167,21 @@ async function printOrder(order) {
     } else {
       cart.forEach((item, index) => {
         const itemSubtotal = Number(item.subtotal || item.price * item.quantity || 0).toFixed(2);
-        const itemName = `${item.quantity || 1} x ${item.name || item.item_name || "Unknown"}`;
+        const itemName = `${item.quantity || 1} x ${item.name || item_item_name || "Unknown"}`;
         const priceText = `  $${itemSubtotal}`;
 
-        // 긴 이름 처리
-        printer.size(1, 1); // 큰 글씨로 아이템
-        const lines = wrapTextWithPrice(itemName, 25, priceText); // 25자는 이름 공간, 총 33자 기준
+        // 아이템 크기 설정
+        printer.raw(Buffer.from([0x1D, 0x21, 0x11])); // GS ! 0x11 → 가로 2배, 세로 2배
+        const lines = wrapTextWithPrice(itemName, 25, priceText);
         lines.forEach((line, i) => {
           if (i === 0) {
-            printer.text(line.padEnd(33 - priceText.length) + priceText); // 첫 줄에 가격
+            printer.text(line.padEnd(33 - priceText.length) + priceText);
           } else {
-            printer.text(line); // 나머지 줄은 이름만
+            printer.text(line);
           }
         });
-        printer.size(1, 1); // 기본 크기로 복귀
+        printer.raw(Buffer.from([0x1D, 0x21, 0x00])); // 크기 초기화
 
-        // 옵션 (큰 글씨)
         if (item.options && item.options.length > 0) {
           item.options.forEach((option) => {
             option.choices.forEach((choice) => {
@@ -209,7 +211,6 @@ async function printOrder(order) {
           });
         }
 
-        // 특이사항
         if (item.specialInstructions) {
           printer
             .font("b")
@@ -218,7 +219,6 @@ async function printOrder(order) {
           wrapText(item.specialInstructions, 33).forEach(line => printer.text(`  ${line}`));
         }
 
-        // 아이템 간 구분선
         if (index < cart.length - 1) {
           printer.text("-".repeat(33));
         }
@@ -232,9 +232,9 @@ async function printOrder(order) {
       .text(`Subtotal: $${Number(order.subtotal || 0).toFixed(2)}`)
       .text(`GST (5%): $${Number(order.gst || 0).toFixed(2)}`)
       .text(`Tip: $${Number(order.tip || 0).toFixed(2)}`)
-      .size(1, 1)
+      .raw(Buffer.from([0x1D, 0x21, 0x11])) // 총액 크기 설정
       .text(`Total: $${Number(order.total || 0).toFixed(2)}`)
-      .size(1, 1);
+      .raw(Buffer.from([0x1D, 0x21, 0x00])); // 크기 초기화
 
     // 마무리
     printer
@@ -247,7 +247,6 @@ async function printOrder(order) {
       .feed(3)
       .cut();
 
-    await new Promise((resolve) => printer.close(() => resolve()));
     log(`Printed order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP})`);
 
     await axios.post(
@@ -259,8 +258,11 @@ async function printOrder(order) {
   } catch (error) {
     log(`Print error for order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP}): ${error.message}`);
   } finally {
-    // 프린터 연결 해제 및 초기화
-    printer.raw(Buffer.from([0x1B, 0x40])); // ESC @로 초기화
+    printer
+      .raw(Buffer.from([0x1B, 0x40]))
+      .align("lt")
+      .font("a")
+      .size(0, 0);
     await new Promise((resolve) => printer.close(() => resolve()));
   }
 }

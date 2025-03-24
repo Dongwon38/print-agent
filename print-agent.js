@@ -158,15 +158,14 @@ async function printOrder(order) {
 
     // 아이템 목록
     printer
-      .text("-".repeat(33))
-      .text("Items:");
+      .text("-".repeat(33));
     if (cart.length === 0) {
       printer.text("No items in this order.");
     } else {
       cart.forEach((item, index) => {
         const itemSubtotal = Number(item.subtotal || item.price * item.quantity || 0).toFixed(2);
         const itemName = `${item.quantity || 1} x ${item.name || item.item_name || "Unknown"}`;
-        const priceText = `$${itemSubtotal}`;
+        const priceText = `  $${itemSubtotal}`;
 
         // 긴 이름 처리
         printer.size(1, 1); // 큰 글씨로 아이템

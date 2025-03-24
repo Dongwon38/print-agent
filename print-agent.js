@@ -11,11 +11,9 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
-const API_URL = process.env.API_URL || "https://nightowlcafe.ca/wp-json/custom/v1";
-const PORT = process.env.PORT || 3000;
-const PRINTER1_IP = process.env.PRINTER1_IP || "192.168.1.100";
-const PRINTER2_IP = process.env.PRINTER2_IP || "192.168.1.101";
-const PRINTER_NETWORK_IP = process.env.PRINTER_NETWORK_IP || "192.168.1.205";
+const API_URL = process.env.API_URL;
+const PORT = process.env.PORT;
+const PRINTER_NETWORK_IP = process.env.PRINTER_NETWORK_IP;
 const TOKEN_FILE = "./jwt_token.txt";
 
 let JWT_TOKEN = null;
@@ -105,42 +103,84 @@ async function printOrder(order) {
 
     printer
       .font("a")
-      .size(1, 1)
       .style("B")
-      .feed(2); // 상단 2줄 여백
+      .feed(2);
 
-    const orderTime = new Date(order.created_at);
-    const pickupTime = new Date(order.due_at);
-    const timeDiff = Math.round((pickupTime - orderTime) / (1000 * 60));
-    const pickupText = timeDiff >= 0 ? `Pickup in ${timeDiff} minutes` : `Pickup ${Math.abs(timeDiff)} mins ago`;
-    printer.text(pickupText);
-
+    // 주문 번호
     printer
+      .size(2, 2)
+      .align("ct")
       .text(`ORDER #${order.order_number || "N/A"}`)
+      .size(1, 1)
       .text("-".repeat(33));
 
+    // 픽업 시간 (형식 변경)
+    const orderTime = new Date(order.created_at).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "America/Vancouver",
+    });
+    const pickupTime = new Date(order.due_at).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "America/Vancouver",
+    });
+    const timeDiff = Math.round((new Date(order.due_at) - new Date(order.created_at)) / (1000 * 60));
+    const pickupText = timeDiff >= 0 ? `Pickup in ${timeDiff} minutes` : `Pickup ${Math.abs(timeDiff)} mins ago`;
     printer
+      .style("BU")
+      .text(pickupText)
+      .style("B");
+
+    // 고객 정보
+    printer
+      .align("lt")
       .text(`Customer: ${order.customer_name || "N/A"}`)
       .text(`Phone: ${order.customer_phone || "N/A"}`)
-      .text(`Order Time: ${order.created_at || "N/A"}`)
-      .text(`Pickup Time: ${order.due_at || "N/A"}`);
+      .text(`Order Time: ${orderTime || "N/A"}`)
+      .text(`Pickup Time: ${pickupTime || "N/A"}`);
 
+    // 고객 노트
     if (order.customer_notes) {
-      printer.text("-".repeat(33)).text("Customer Notes:");
+      printer
+        .text("-".repeat(33))
+        .font("b")
+        .text("Customer Notes:")
+        .font("a");
       wrapText(order.customer_notes, 33).forEach(line => printer.text(line));
     }
 
-    printer.text("-".repeat(33)).text("Items:");
+    // 아이템 목록
+    printer
+      .text("-".repeat(33))
+      .text("Items:");
     if (cart.length === 0) {
       printer.text("No items in this order.");
     } else {
       cart.forEach((item, index) => {
-        if (index > 0) printer.feed(1);
         const itemSubtotal = Number(item.subtotal || item.price * item.quantity || 0).toFixed(2);
         const itemName = `${item.quantity || 1} x ${item.name || item.item_name || "Unknown"}`;
-        printer.text(`${itemName} $${itemSubtotal}`);
-        printer.text(`- Base Price: $${Number(item.basePrice || item.price || 0).toFixed(2)}`);
+        const priceText = `$${itemSubtotal}`;
 
+        // 긴 이름 처리
+        printer.size(1, 1); // 큰 글씨로 아이템
+        const lines = wrapTextWithPrice(itemName, 25, priceText); // 25자는 이름 공간, 총 33자 기준
+        lines.forEach((line, i) => {
+          if (i === 0) {
+            printer.text(line.padEnd(33 - priceText.length) + priceText); // 첫 줄에 가격
+          } else {
+            printer.text(line); // 나머지 줄은 이름만
+          }
+        });
+        printer.size(1, 1); // 기본 크기로 복귀
+
+        // 옵션 (큰 글씨)
         if (item.options && item.options.length > 0) {
           item.options.forEach((option) => {
             option.choices.forEach((choice) => {
@@ -157,34 +197,54 @@ async function printOrder(order) {
                 });
               }
 
-              const priceText = totalPrice > 0 ? `$${totalPrice.toFixed(2)}` : "Free";
-              printer.text(`${optionText} ${priceText}`);
+              const priceTextOption = totalPrice > 0 ? `$${totalPrice.toFixed(2)}` : "(CA$0.00)";
+              const optionLines = wrapTextWithPrice(optionText, 25, priceTextOption);
+              optionLines.forEach((line, i) => {
+                if (i === 0) {
+                  printer.text(line.padEnd(33 - priceTextOption.length) + priceTextOption);
+                } else {
+                  printer.text(line);
+                }
+              });
             });
           });
         }
 
+        // 특이사항
         if (item.specialInstructions) {
-          printer.text("- Note:");
+          printer
+            .font("b")
+            .text("- Note:")
+            .font("a");
           wrapText(item.specialInstructions, 33).forEach(line => printer.text(`  ${line}`));
+        }
+
+        // 아이템 간 구분선
+        if (index < cart.length - 1) {
+          printer.text("-".repeat(33));
         }
       });
     }
 
+    // 합계
     printer
       .text("-".repeat(33))
+      .align("rt")
       .text(`Subtotal: $${Number(order.subtotal || 0).toFixed(2)}`)
       .text(`GST (5%): $${Number(order.gst || 0).toFixed(2)}`)
-      .text(`PST: $${Number(order.pst || 0).toFixed(2)}`)
-      .text(`Deposit Fee: $${Number(order.deposit_fee || 0).toFixed(2)}`)
       .text(`Tip: $${Number(order.tip || 0).toFixed(2)}`)
+      .size(1, 1)
       .text(`Total: $${Number(order.total || 0).toFixed(2)}`)
-      .text("-".repeat(33));
+      .size(1, 1);
 
+    // 마무리
     printer
+      .align("ct")
+      .text("-".repeat(33))
       .text("Thank you for your order!")
       .text("Night Owl Cafe")
       .text("(604) 276-0576")
-      .feed(2) // 하단 2줄 여백
+      .feed(3)
       .cut();
 
     await new Promise((resolve) => printer.close(() => resolve()));
@@ -198,7 +258,29 @@ async function printOrder(order) {
     log(`Marked order #${order.id} as printed`);
   } catch (error) {
     log(`Print error for order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP}): ${error.message}`);
+  } finally {
+    // 프린터 연결 해제 및 초기화
+    printer.raw(Buffer.from([0x1B, 0x40])); // ESC @로 초기화
+    await new Promise((resolve) => printer.close(() => resolve()));
   }
+}
+
+// 긴 텍스트를 가격과 분리해서 줄 바꿈 처리
+function wrapTextWithPrice(text, maxWidth, price) {
+  const lines = [];
+  let currentLine = "";
+
+  const words = text.split(" ");
+  words.forEach((word) => {
+    if ((currentLine + " " + word).length <= maxWidth) {
+      currentLine += (currentLine ? " " : "") + word;
+    } else {
+      if (currentLine) lines.push(currentLine);
+      currentLine = word.length <= maxWidth ? word : word.slice(0, maxWidth);
+    }
+  });
+  if (currentLine) lines.push(currentLine);
+  return lines;
 }
 
 async function pollOrders() {
@@ -220,7 +302,8 @@ async function pollOrders() {
       for (const order of orders) {
         if (!order.print_status && order.payment_status === 'paid') {
           log(`Order #${order.order_number || "N/A"} detected, printing...`);
-          await printOrder(order);
+          await printOrder(order);  // Print order first
+          await printOrder(order);  // Print order again
         } else {
           log(`Order #${order.order_number || "N/A"} already printed or not paid`);
         }

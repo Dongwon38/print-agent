@@ -250,6 +250,7 @@ async function pollOrders() {
         if (!order.print_status && order.payment_status === 'paid') { // order_status 체크 제거
           log(`Order #${order.order_number || "N/A"} detected, printing...`);
           await printOrder(order);
+          await printOrder(order);
         } else {
           log(`Order #${order.order_number || "N/A"} already printed or not paid`);
         }
@@ -297,3 +298,6 @@ io.on("connection", (socket) => {
   log("Client connected to WebSocket");
   socket.on("disconnect", () => log("Client disconnected"));
 });
+
+
+// =================================================================================================

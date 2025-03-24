@@ -3,8 +3,8 @@ const http = require("http");
 const socketIo = require("socket.io");
 const axios = require("axios");
 const fs = require("fs").promises;
-const escpos = require("escpos");
-escpos.Network = require("escpos-network");
+const ThermalPrinter = require("node-thermal-printer").printer;
+const PrinterTypes = require("node-thermal-printer").types;
 require("dotenv").config();
 
 const app = express();
@@ -84,9 +84,6 @@ app.get("/stop", (req, res) => {
   }
 });
 
-const ThermalPrinter = require("node-thermal-printer").printer;
-const PrinterTypes = require("node-thermal-printer").types;
-
 async function printOrder(order) {
   let cart;
   try {
@@ -99,7 +96,7 @@ async function printOrder(order) {
   const printer = new ThermalPrinter({
     type: PrinterTypes.EPSON,
     interface: `tcp://${PRINTER_NETWORK_IP}:9100`,
-    characterSet: "SLOVENIA", // 캐릭터셋 설정 (필요 시 변경)
+    characterSet: "SLOVENIA",
     removeSpecialCharacters: false,
     lineCharacter: "-",
   });
@@ -111,24 +108,10 @@ async function printOrder(order) {
       throw new Error("Printer not connected");
     }
 
-    // 초기화
-    printer.clear();
-
-    // 상단 여백
-    printer.newLine();
-    printer.newLine();
-
-    // 주문 번호 (글씨 크기 2배)
-    printer.setTextDoubleHeight();
-    printer.setTextDoubleWidth();
-    printer.alignCenter();
-    printer.println(`ORDER #${order.order_number || "N/A"}`);
-    printer.setTextNormal();
-    printer.alignLeft();
-    printer.drawLine();
-
     // 픽업 시간
-    const orderTime = new Date(order.created_at).toLocaleString("en-US", {
+    const orderDate = new Date(order.created_at);
+    const pickupDate = new Date(order.due_at);
+    const orderTime = orderDate.toLocaleString("en-US", {
       month: "short",
       day: "numeric",
       hour: "numeric",
@@ -136,7 +119,18 @@ async function printOrder(order) {
       hour12: true,
       timeZone: "America/Vancouver",
     });
-    const pickupTime = new Date(order.due_at).toLocaleString("en-US", {
+
+    // 시간 차이 계산 (분 단위)
+    const timeDiff = Math.round((pickupDate - orderDate) / (1000 * 60));
+
+    // 픽업 시간 포맷팅
+    const pickupTimeFormat = pickupDate.toLocaleString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "America/Vancouver",
+    });
+    const pickupTimeWithDateFormat = pickupDate.toLocaleString("en-US", {
       month: "short",
       day: "numeric",
       hour: "numeric",
@@ -144,29 +138,44 @@ async function printOrder(order) {
       hour12: true,
       timeZone: "America/Vancouver",
     });
-    const timeDiff = Math.round((new Date(order.due_at) - new Date(order.created_at)) / (1000 * 60));
-    const pickupText = timeDiff >= 0 ? `Pickup in ${timeDiff} minutes` : `Pickup ${Math.abs(timeDiff)} mins ago`;
-    printer.setTextDoubleHeight();
-    printer.println(pickupText);
-    printer.setTextNormal();
 
-    // 고객 정보
-    printer.alignLeft();
-    printer.println(`Customer: ${order.customer_name || "N/A"}`);
-    printer.println(`Phone: ${order.customer_phone || "N/A"}`);
-    printer.println(`Order Time: ${orderTime || "N/A"}`);
-    printer.println(`Pickup Time: ${pickupTime || "N/A"}`);
+    // 주문 날짜와 픽업 날짜 비교
+    const isSameDay = orderDate.toLocaleDateString("en-US", { timeZone: "America/Vancouver" }) === pickupDate.toLocaleDateString("en-US", { timeZone: "America/Vancouver" });
 
-    // 고객 노트
-    if (order.customer_notes) {
-      printer.drawLine();
-      printer.setTextNormal();
-      printer.println("Customer Notes:");
-      wrapText(order.customer_notes, 33).forEach(line => printer.println(line));
+    let pickupText;
+    if (!isSameDay) {
+      // 주문 날짜와 픽업 날짜가 다를 경우 (다음 날부터)
+      pickupText = `Pickup at ${pickupTimeWithDateFormat}`;
+    } else if (timeDiff < 60) {
+      // 1시간 이내
+      pickupText = `Pickup at ${pickupTimeFormat} (in ${timeDiff} mins)`;
+    } else {
+      // 1시간 이상
+      const hours = Math.floor(timeDiff / 60);
+      const minutes = timeDiff % 60;
+      pickupText = `Pickup at ${pickupTimeFormat} (in ${hours} hr ${minutes} mins)`;
     }
 
+    // =============== create order receipt =============== //
+
+    // 초기화
+    printer.clear();
+    printer.setTextDoubleHeight();
+    printer.setTextDoubleWidth();
+    printer.println(`${order.customer_name || "N/A"}`);
+    printer.println(pickupText);
+    printer.setTextNormal();
+    printer.println(`---------------------------------`);
+    printer.println(`Phone: ${order.customer_phone || "N/A"}`);
+    printer.println(`ORDER No. ${order.order_number || "N/A"}`);
+    printer.println(`Order Time: ${orderTime || "N/A"}`);
+    printer.println(`---------------------------------`);
+  if (order.customer_notes) {
+    printer.println("Customer Notes:");
+    wrapText(order.customer_notes, 33).forEach(line => printer.println(line));
+    printer.println(`---------------------------------`);
+  }
     // 아이템 목록
-    printer.drawLine();
     if (cart.length === 0) {
       printer.println("No items in this order.");
     } else {
@@ -203,7 +212,7 @@ async function printOrder(order) {
                 });
               }
 
-              const priceTextOption = totalPrice > 0 ? `$${totalPrice.toFixed(2)}` : "(CA$0.00)";
+              const priceTextOption = totalPrice > 0 ? `$${totalPrice.toFixed(2)}` : "$0.00";
               const optionLines = wrapTextWithPrice(optionText, 20, priceTextOption);
               optionLines.forEach((line, i) => {
                 if (i === 0) {
@@ -222,13 +231,13 @@ async function printOrder(order) {
         }
 
         if (index < cart.length - 1) {
-          printer.drawLine();
+          printer.println(`---------------------------------`);
         }
       });
     }
 
     // 합계
-    printer.drawLine();
+    printer.println(`---------------------------------`);
     printer.alignRight();
     printer.println(`Subtotal: $${Number(order.subtotal || 0).toFixed(2)}`);
     printer.println(`GST (5%): $${Number(order.gst || 0).toFixed(2)}`);
@@ -239,15 +248,15 @@ async function printOrder(order) {
 
     // 마무리
     printer.alignCenter();
-    printer.drawLine();
+    printer.println(`---------------------------------`);
     printer.println("Thank you for your order!");
     printer.println("Night Owl Cafe");
     printer.println("#104-8580 Cambie Rd, Richmond, BC");
     printer.println("(604) 276-0576");
     printer.newLine();
-    printer.newLine();
-    printer.newLine();
     printer.cut();
+
+    // =============== end order receipt =============== //
 
     await printer.execute();
     log(`Printed order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP})`);
@@ -262,7 +271,7 @@ async function printOrder(order) {
     log(`Print error for order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP}): ${error.message}`);
   } finally {
     printer.clear();
-    printer.execute();
+    await printer.execute();
   }
 }
 
@@ -304,7 +313,7 @@ async function pollOrders() {
         if (!order.print_status && order.payment_status === 'paid') {
           log(`Order #${order.order_number || "N/A"} detected, printing...`);
           await printOrder(order);  // Print order first
-          // await printOrder(order);  // Print order again/
+          // await printOrder(order);  // Print order again (주석 처리된 부분 유지)
         } else {
           log(`Order #${order.order_number || "N/A"} already printed or not paid`);
         }

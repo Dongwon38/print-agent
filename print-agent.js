@@ -104,13 +104,12 @@ async function printOrder(order) {
     // 출력 시작 전 프린터 초기화
     printer.raw(Buffer.from([0x1B, 0x40]))
       .font("a")
-      .style("B")
       .align("lt")
       .feed(2);
 
-    // 주문 번호 (원시 명령어로 크기 설정)
+    // 주문 번호 (크기 설정 후 바로 출력)
     printer
-      .raw(Buffer.from([0x1D, 0x21, 0x22])) // GS ! 0x22 → 가로 3배, 세로 3배
+      .raw(Buffer.from([0x1D, 0x21, 0x11])) // GS ! 0x11 → 가로 2배, 세로 2배
       .align("ct")
       .text(`ORDER #${order.order_number || "N/A"}`)
       .raw(Buffer.from([0x1D, 0x21, 0x00])) // 크기 초기화
@@ -137,9 +136,9 @@ async function printOrder(order) {
     const timeDiff = Math.round((new Date(order.due_at) - new Date(order.created_at)) / (1000 * 60));
     const pickupText = timeDiff >= 0 ? `Pickup in ${timeDiff} minutes` : `Pickup ${Math.abs(timeDiff)} mins ago`;
     printer
-      .style("BU")
+      .raw(Buffer.from([0x1D, 0x21, 0x11])) // 크기 설정
       .text(pickupText)
-      .style("B");
+      .raw(Buffer.from([0x1D, 0x21, 0x00])); // 크기 초기화
 
     // 고객 정보
     printer
@@ -167,12 +166,12 @@ async function printOrder(order) {
     } else {
       cart.forEach((item, index) => {
         const itemSubtotal = Number(item.subtotal || item.price * item.quantity || 0).toFixed(2);
-        const itemName = `${item.quantity || 1} x ${item.name || item_item_name || "Unknown"}`;
+        const itemName = `${item.quantity || 1} x ${item.name || item.item_name || "Unknown"}`;
         const priceText = `  $${itemSubtotal}`;
 
-        // 아이템 크기 설정
-        printer.raw(Buffer.from([0x1D, 0x21, 0x11])); // GS ! 0x11 → 가로 2배, 세로 2배
-        const lines = wrapTextWithPrice(itemName, 25, priceText);
+        // 아이템 크기 설정 (가로 2배, 세로 2배)
+        printer.raw(Buffer.from([0x1D, 0x21, 0x11]));
+        const lines = wrapTextWithPrice(itemName, 20, priceText); // 용지 폭 고려, maxWidth 줄임
         lines.forEach((line, i) => {
           if (i === 0) {
             printer.text(line.padEnd(33 - priceText.length) + priceText);
@@ -199,7 +198,7 @@ async function printOrder(order) {
               }
 
               const priceTextOption = totalPrice > 0 ? `$${totalPrice.toFixed(2)}` : "(CA$0.00)";
-              const optionLines = wrapTextWithPrice(optionText, 25, priceTextOption);
+              const optionLines = wrapTextWithPrice(optionText, 20, priceTextOption);
               optionLines.forEach((line, i) => {
                 if (i === 0) {
                   printer.text(line.padEnd(33 - priceTextOption.length) + priceTextOption);
@@ -262,7 +261,7 @@ async function printOrder(order) {
       .raw(Buffer.from([0x1B, 0x40]))
       .align("lt")
       .font("a")
-      .size(0, 0);
+      .raw(Buffer.from([0x1D, 0x21, 0x00]));
     await new Promise((resolve) => printer.close(() => resolve()));
   }
 }

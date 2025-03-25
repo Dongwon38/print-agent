@@ -3,9 +3,8 @@ const http = require("http");
 const socketIo = require("socket.io");
 const axios = require("axios");
 const fs = require("fs").promises;
-const ThermalPrinter = require("node-thermal-printer").printer;
-const PrinterTypes = require("node-thermal-printer").types;
-const iconv = require("iconv-lite");
+const escpos = require('escpos');
+escpos.Network = require('escpos-network');
 require("dotenv").config();
 
 const app = express();
@@ -94,27 +93,22 @@ async function printOrder(order) {
     return;
   }
 
-  const printer = new ThermalPrinter({
-    type: PrinterTypes.EPSON,
-    interface: `tcp://${PRINTER_NETWORK_IP}:9100`,
-    characterSet: "CHINA", // 중국어 간체 (GBK)
-    removeSpecialCharacters: false,
-    lineCharacter: "-",
-  });
+  const device = new escpos.Network(PRINTER_NETWORK_IP, 9100);
+  const printer = new escpos.Printer(device);
 
   try {
-    // 프린터 연결 확인
-    const isConnected = await printer.isPrinterConnected();
-    if (!isConnected) {
-      throw new Error("Printer not connected");
-    }
+    await new Promise((resolve, reject) => {
+      device.open((err) => {
+        if (err) {
+          reject(new Error(`Printer connection failed: ${err.message}`));
+        } else {
+          resolve();
+        }
+      });
+    });
 
-    // 초기화 최소화: HW_INIT 호출 제거
-    // printer.clear(); // 제거: 프린터 초기화하면 문자셋 설정이 리셋될 수 있음
-
-    // 문자셋 설정 (직접 ESC/POS 명령어로 설정)
-    log("Manually setting character set to CHINA (PC936, GBK)");
-    printer.raw(Buffer.from([0x1B, 0x74, 0x30])); // ESC t 48 (PC936, GBK)
+    // 프린터 초기화
+    printer.init();
 
     // 픽업 시간
     const orderDate = new Date(order.created_at);
@@ -157,25 +151,29 @@ async function printOrder(order) {
       pickupText = `Pickup Time: ${pickupTimeFormat} (in ${hours} hr ${minutes} mins)`;
     }
 
-    // 출력 시작
-    printer.setTextDoubleHeight();
-    printer.println(`${order.customer_name || "N/A"}`);
-    printer.println(pickupText);
-    printer.setTextNormal();
-    printer.println(`---------------------------------`);
-    printer.println(`Order Time: ${orderTime || "N/A"}`);
-    printer.println(`ORDER No. ${order.order_number || "N/A"}`);
-    printer.println(`Phone: ${order.customer_phone || "N/A"}`);
-    printer.println(`---------------------------------`);
+    // 출력 시작 (영어 출력: ASCII)
+    printer
+      .encode('ASCII') // 영어 출력용 문자셋
+      .font('a')
+      .size(1, 1) // 글씨 크기 2배 (Double height)
+      .text(`${order.customer_name || "N/A"}`)
+      .text(pickupText)
+      .size(0, 0) // 글씨 크기 정상
+      .text("---------------------------------")
+      .text(`Order Time: ${orderTime || "N/A"}`)
+      .text(`ORDER No. ${order.order_number || "N/A"}`)
+      .text(`Phone: ${order.customer_phone || "N/A"}`)
+      .text("---------------------------------");
+
     if (order.customer_notes) {
-      printer.println("Customer Notes:");
-      wrapText(order.customer_notes, 33).forEach(line => printer.println(line));
-      printer.println(`---------------------------------`);
+      printer.text("Customer Notes:");
+      wrapText(order.customer_notes, 33).forEach(line => printer.text(line));
+      printer.text("---------------------------------");
     }
 
     // 아이템 목록
     if (cart.length === 0) {
-      printer.println("No items in this order.");
+      printer.text("No items in this order.");
     } else {
       cart.forEach((item, index) => {
         const itemSubtotal = Number(item.subtotal || item.price * item.quantity || 0).toFixed(2);
@@ -184,33 +182,32 @@ async function printOrder(order) {
         const itemName = `${item.quantity || 1} x ${itemNameEnglish}`;
         const priceText = `  $${itemSubtotal}`;
 
-        // 영어 이름 출력 (글씨 크기 2배)
-        printer.setTextDoubleHeight();
+        // 영어 이름 출력 (ASCII)
+        printer
+          .encode('ASCII')
+          .size(1, 1); // 글씨 크기 2배
         const lines = wrapTextWithPrice(itemName, 25, priceText);
         lines.forEach((line, i) => {
           if (i === 0) {
-            printer.println(line.padEnd(33 - priceText.length) + priceText);
+            printer.text(line.padEnd(33 - priceText.length) + priceText);
           } else {
-            printer.println(line);
+            printer.text(line);
           }
         });
 
-        // 중국어 이름 출력 (직접 GBK 인코딩 후 raw 전송)
+        // 중국어 이름 출력 (GBK)
         if (itemNameChinese) {
           const itemNameChineseLine = `${item.quantity || 1} x ${itemNameChinese}`;
           log(`Printing Chinese: ${itemNameChineseLine}`);
-          // 문자셋 설정 재확인
-          printer.raw(Buffer.from([0x1B, 0x74, 0x30])); // ESC t 48 (PC936, GBK)
-          // GBK로 인코딩
-          const encodedChinese = iconv.encode(itemNameChineseLine + "\n", "gbk");
-          printer.setTextDoubleHeight(); // 중국어 글씨 크기 2배
-          printer.raw(encodedChinese);
-          printer.setTextNormal();
-        } else {
-          printer.setTextNormal();
+          printer
+            .encode('GBK') // 중국어 출력용 문자셋
+            .size(1, 1) // 글씨 크기 2배
+            .text(itemNameChineseLine);
         }
+        printer.size(0, 0); // 글씨 크기 정상
 
         if (item.options && item.options.length > 0) {
+          printer.encode('ASCII'); // 옵션은 영어로 출력
           item.options.forEach((option) => {
             option.choices.forEach((choice) => {
               let optionText = `- ${choice.name || "N/A"}`;
@@ -230,9 +227,9 @@ async function printOrder(order) {
               const optionLines = wrapTextWithPrice(optionText, 20, priceTextOption);
               optionLines.forEach((line, i) => {
                 if (i === 0) {
-                  printer.println(line.padEnd(33 - priceTextOption.length) + priceTextOption);
+                  printer.text(line.padEnd(33 - priceTextOption.length) + priceTextOption);
                 } else {
-                  printer.println(line);
+                  printer.text(line);
                 }
               });
             });
@@ -240,37 +237,40 @@ async function printOrder(order) {
         }
 
         if (item.specialInstructions) {
-          printer.println("- Note:");
-          wrapText(item.specialInstructions, 33).forEach(line => printer.println(`  ${line}`));
+          printer.text("- Note:");
+          wrapText(item.specialInstructions, 33).forEach(line => printer.text(`  ${line}`));
         }
 
         if (index < cart.length - 1) {
-          printer.println(`---------------------------------`);
+          printer.text("---------------------------------");
         }
       });
     }
 
-    // 합계
-    printer.println(`---------------------------------`);
-    printer.alignRight();
-    printer.println(`Subtotal: $${Number(order.subtotal || 0).toFixed(2)}`);
-    printer.println(`GST (5%): $${Number(order.gst || 0).toFixed(2)}`);
-    printer.println(`Tip: $${Number(order.tip || 0).toFixed(2)}`);
-    printer.setTextDoubleHeight();
-    printer.println(`Total: $${Number(order.total || 0).toFixed(2)}`);
-    printer.setTextNormal();
+    // 합계 (ASCII)
+    printer
+      .encode('ASCII')
+      .text("---------------------------------")
+      .align('rt')
+      .text(`Subtotal: $${Number(order.subtotal || 0).toFixed(2)}`)
+      .text(`GST (5%): $${Number(order.gst || 0).toFixed(2)}`)
+      .text(`Tip: $${Number(order.tip || 0).toFixed(2)}`)
+      .size(1, 1)
+      .text(`Total: $${Number(order.total || 0).toFixed(2)}`)
+      .size(0, 0);
 
-    // 마무리
-    printer.alignCenter();
-    printer.println(`---------------------------------`);
-    printer.println("Thank you for your order!");
-    printer.println("Night Owl Cafe");
-    printer.println("#104-8580 Cambie Rd, Richmond, BC");
-    printer.println("(604) 276-0576");
-    printer.newLine();
-    printer.cut();
+    // 마무리 (ASCII)
+    printer
+      .align('ct')
+      .text("---------------------------------")
+      .text("Thank you for your order!")
+      .text("Night Owl Cafe")
+      .text("#104-8580 Cambie Rd, Richmond, BC")
+      .text("(604) 276-0576")
+      .newLine()
+      .cut()
+      .close();
 
-    await printer.execute();
     log(`Printed order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP})`);
 
     await axios.post(
@@ -281,10 +281,7 @@ async function printOrder(order) {
     log(`Marked order #${order.id} as printed`);
   } catch (error) {
     log(`Print error for order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP}): ${error.message}`);
-  } finally {
-    // 프린터 상태 정리 (필요 시)
-    printer.clear();
-    await printer.execute();
+    device.close();
   }
 }
 

@@ -144,16 +144,13 @@ async function printOrder(order) {
 
     let pickupText;
     if (!isSameDay) {
-      // 주문 날짜와 픽업 날짜가 다를 경우 (다음 날부터)
       pickupText = `Pickup at ${pickupTimeWithDateFormat}`;
     } else if (timeDiff < 60) {
-      // 1시간 이내
-      pickupText = `Pickup at ${pickupTimeFormat} (in ${timeDiff} mins)`;
+      pickupText = `Pickup at ${pickupTimeFormat} (in ${timeDiff}mins)`;
     } else {
-      // 1시간 이상
       const hours = Math.floor(timeDiff / 60);
       const minutes = timeDiff % 60;
-      pickupText = `Pickup at ${pickupTimeFormat} (in ${hours} hr ${minutes} mins)`;
+      pickupText = `Pickup at ${pickupTimeFormat} (in ${hours}hr ${minutes}mins)`;
     }
 
     // =============== create order receipt =============== //
@@ -161,14 +158,13 @@ async function printOrder(order) {
     // 초기화
     printer.clear();
     printer.setTextDoubleHeight();
-    printer.setTextDoubleWidth();
     printer.println(`${order.customer_name || "N/A"}`);
     printer.println(pickupText);
     printer.setTextNormal();
     printer.println(`---------------------------------`);
-    printer.println(`Phone: ${order.customer_phone || "N/A"}`);
-    printer.println(`ORDER No. ${order.order_number || "N/A"}`);
     printer.println(`Order Time: ${orderTime || "N/A"}`);
+    printer.println(`ORDER No. ${order.order_number || "N/A"}`);
+    printer.println(`Phone: ${order.customer_phone || "N/A"}`);
     printer.println(`---------------------------------`);
   if (order.customer_notes) {
     printer.println("Customer Notes:");
@@ -186,7 +182,7 @@ async function printOrder(order) {
 
         // 아이템 (글씨 크기 2배)
         printer.setTextDoubleHeight();
-        const lines = wrapTextWithPrice(itemName, 20, priceText);
+        const lines = wrapTextWithPrice(itemName, 25, priceText);
         lines.forEach((line, i) => {
           if (i === 0) {
             printer.println(line.padEnd(33 - priceText.length) + priceText);

@@ -2,6 +2,7 @@ const express = require("express");
 const http = require("http");
 const socketIo = require("socket.io");
 const axios = require("axios");
+const iconv = require("iconv-lite");
 const fs = require("fs").promises;
 const ThermalPrinter = require("node-thermal-printer").printer;
 const PrinterTypes = require("node-thermal-printer").types;
@@ -96,7 +97,7 @@ async function printOrder(order) {
   const printer = new ThermalPrinter({
     type: PrinterTypes.EPSON,
     interface: `tcp://${PRINTER_NETWORK_IP}:9100`,
-    characterSet: "SLOVENIA",
+    characterSet: "PC936", // 중국어 지원 문자셋 (GBK/GB18030)
     removeSpecialCharacters: false,
     lineCharacter: "-",
   });
@@ -120,10 +121,7 @@ async function printOrder(order) {
       timeZone: "America/Vancouver",
     });
 
-    // 시간 차이 계산 (분 단위)
     const timeDiff = Math.round((pickupDate - orderDate) / (1000 * 60));
-
-    // 픽업 시간 포맷팅
     const pickupTimeFormat = pickupDate.toLocaleString("en-US", {
       hour: "numeric",
       minute: "2-digit",
@@ -139,21 +137,18 @@ async function printOrder(order) {
       timeZone: "America/Vancouver",
     });
 
-    // 주문 날짜와 픽업 날짜 비교
     const isSameDay = orderDate.toLocaleDateString("en-US", { timeZone: "America/Vancouver" }) === pickupDate.toLocaleDateString("en-US", { timeZone: "America/Vancouver" });
 
     let pickupText;
     if (!isSameDay) {
       pickupText = `Pickup at ${pickupTimeWithDateFormat}`;
     } else if (timeDiff < 60) {
-      pickupText = `Pickup at ${pickupTimeFormat} (in ${timeDiff}mins)`;
+      pickupText = `Pickup at ${pickupTimeFormat} (in ${timeDiff} mins)`;
     } else {
       const hours = Math.floor(timeDiff / 60);
       const minutes = timeDiff % 60;
-      pickupText = `Pickup at ${pickupTimeFormat} (in ${hours}hr ${minutes}mins)`;
+      pickupText = `Pickup at ${pickupTimeFormat} (in ${hours} hr ${minutes} mins)`;
     }
-
-    // =============== create order receipt =============== //
 
     // 초기화
     printer.clear();
@@ -166,21 +161,24 @@ async function printOrder(order) {
     printer.println(`ORDER No. ${order.order_number || "N/A"}`);
     printer.println(`Phone: ${order.customer_phone || "N/A"}`);
     printer.println(`---------------------------------`);
-  if (order.customer_notes) {
-    printer.println("Customer Notes:");
-    wrapText(order.customer_notes, 33).forEach(line => printer.println(line));
-    printer.println(`---------------------------------`);
-  }
+    if (order.customer_notes) {
+      printer.println("Customer Notes:");
+      wrapText(order.customer_notes, 33).forEach(line => printer.println(line));
+      printer.println(`---------------------------------`);
+    }
+
     // 아이템 목록
     if (cart.length === 0) {
       printer.println("No items in this order.");
     } else {
       cart.forEach((item, index) => {
         const itemSubtotal = Number(item.subtotal || item.price * item.quantity || 0).toFixed(2);
-        const itemName = `${item.quantity || 1} x ${item.name || item.item_name || "Unknown"}`;
+        const itemNameEnglish = item.name?.split(" / ")[0] || "Unknown";
+        const itemNameChinese = item.name?.split(" / ")[1] || "";
+        const itemName = `${item.quantity || 1} x ${itemNameEnglish}`;
         const priceText = `  $${itemSubtotal}`;
 
-        // 아이템 (글씨 크기 2배)
+        // 영어 이름 출력 (글씨 크기 2배)
         printer.setTextDoubleHeight();
         const lines = wrapTextWithPrice(itemName, 25, priceText);
         lines.forEach((line, i) => {
@@ -190,6 +188,14 @@ async function printOrder(order) {
             printer.println(line);
           }
         });
+
+        // 중국어 이름 출력 (GBK로 인코딩)
+        if (itemNameChinese) {
+          const itemNameChineseLine = `${item.quantity || 1} x ${itemNameChinese}`;
+          const encodedChinese = iconv.encode(itemNameChineseLine, "GBK");
+          printer.raw(encodedChinese);
+          printer.println(""); // 줄 바꿈
+        }
         printer.setTextNormal();
 
         if (item.options && item.options.length > 0) {
@@ -251,8 +257,6 @@ async function printOrder(order) {
     printer.println("(604) 276-0576");
     printer.newLine();
     printer.cut();
-
-    // =============== end order receipt =============== //
 
     await printer.execute();
     log(`Printed order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP})`);

@@ -109,6 +109,13 @@ async function printOrder(order) {
       throw new Error("Printer not connected");
     }
 
+    // 초기화 최소화: HW_INIT 호출 제거
+    // printer.clear(); // 제거: 프린터 초기화하면 문자셋 설정이 리셋될 수 있음
+
+    // 문자셋 설정 (직접 ESC/POS 명령어로 설정)
+    log("Manually setting character set to CHINA (PC936, GBK)");
+    printer.raw(Buffer.from([0x1B, 0x74, 0x30])); // ESC t 48 (PC936, GBK)
+
     // 픽업 시간
     const orderDate = new Date(order.created_at);
     const pickupDate = new Date(order.due_at);
@@ -141,17 +148,16 @@ async function printOrder(order) {
 
     let pickupText;
     if (!isSameDay) {
-      pickupText = `Pickup at ${pickupTimeWithDateFormat}`;
+      pickupText = `Pickup Time: ${pickupTimeWithDateFormat}`;
     } else if (timeDiff < 60) {
-      pickupText = `Pickup at ${pickupTimeFormat} (in ${timeDiff} mins)`;
+      pickupText = `Pickup Time: ${pickupTimeFormat} (in ${timeDiff} mins)`;
     } else {
       const hours = Math.floor(timeDiff / 60);
       const minutes = timeDiff % 60;
-      pickupText = `Pickup at ${pickupTimeFormat} (in ${hours} hr ${minutes} mins)`;
+      pickupText = `Pickup Time: ${pickupTimeFormat} (in ${hours} hr ${minutes} mins)`;
     }
 
-    // 초기화
-    printer.clear();
+    // 출력 시작
     printer.setTextDoubleHeight();
     printer.println(`${order.customer_name || "N/A"}`);
     printer.println(pickupText);
@@ -189,13 +195,16 @@ async function printOrder(order) {
           }
         });
 
-        // 중국어 이름 출력 (GBK로 인코딩, 글씨 크기 2배)
+        // 중국어 이름 출력 (직접 GBK 인코딩 후 raw 전송)
         if (itemNameChinese) {
           const itemNameChineseLine = `${item.quantity || 1} x ${itemNameChinese}`;
-          const encodedChinese = iconv.encode(itemNameChineseLine, "gbk");
+          log(`Printing Chinese: ${itemNameChineseLine}`);
+          // 문자셋 설정 재확인
+          printer.raw(Buffer.from([0x1B, 0x74, 0x30])); // ESC t 48 (PC936, GBK)
+          // GBK로 인코딩
+          const encodedChinese = iconv.encode(itemNameChineseLine + "\n", "gbk");
           printer.setTextDoubleHeight(); // 중국어 글씨 크기 2배
           printer.raw(encodedChinese);
-          printer.println(""); // 줄 바꿈
           printer.setTextNormal();
         } else {
           printer.setTextNormal();
@@ -273,6 +282,7 @@ async function printOrder(order) {
   } catch (error) {
     log(`Print error for order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP}): ${error.message}`);
   } finally {
+    // 프린터 상태 정리 (필요 시)
     printer.clear();
     await printer.execute();
   }

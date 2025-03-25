@@ -2,10 +2,10 @@ const express = require("express");
 const http = require("http");
 const socketIo = require("socket.io");
 const axios = require("axios");
-const iconv = require("iconv-lite");
 const fs = require("fs").promises;
 const ThermalPrinter = require("node-thermal-printer").printer;
 const PrinterTypes = require("node-thermal-printer").types;
+const iconv = require("iconv-lite");
 require("dotenv").config();
 
 const app = express();
@@ -97,7 +97,7 @@ async function printOrder(order) {
   const printer = new ThermalPrinter({
     type: PrinterTypes.EPSON,
     interface: `tcp://${PRINTER_NETWORK_IP}:9100`,
-    characterSet: "PC936", // 중국어 지원 문자셋 (GBK/GB18030)
+    characterSet: "CHINA", // 중국어 간체 (GBK)
     removeSpecialCharacters: false,
     lineCharacter: "-",
   });
@@ -189,14 +189,17 @@ async function printOrder(order) {
           }
         });
 
-        // 중국어 이름 출력 (GBK로 인코딩)
+        // 중국어 이름 출력 (GBK로 인코딩, 글씨 크기 2배)
         if (itemNameChinese) {
           const itemNameChineseLine = `${item.quantity || 1} x ${itemNameChinese}`;
-          const encodedChinese = iconv.encode(itemNameChineseLine, "GBK");
+          const encodedChinese = iconv.encode(itemNameChineseLine, "gbk");
+          printer.setTextDoubleHeight(); // 중국어 글씨 크기 2배
           printer.raw(encodedChinese);
           printer.println(""); // 줄 바꿈
+          printer.setTextNormal();
+        } else {
+          printer.setTextNormal();
         }
-        printer.setTextNormal();
 
         if (item.options && item.options.length > 0) {
           item.options.forEach((option) => {
@@ -312,8 +315,7 @@ async function pollOrders() {
       for (const order of orders) {
         if (!order.print_status && order.payment_status === 'paid') {
           log(`Order #${order.order_number || "N/A"} detected, printing...`);
-          await printOrder(order);  // Print order first
-          // await printOrder(order);  // Print order again (주석 처리된 부분 유지)
+          await printOrder(order);
         } else {
           log(`Order #${order.order_number || "N/A"} already printed or not paid`);
         }

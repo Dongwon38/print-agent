@@ -4,7 +4,7 @@ const socketIo = require("socket.io");
 const axios = require("axios");
 const fs = require("fs").promises;
 const escpos = require("escpos");
-escpos.Network = require("escpos-network");
+escpos.USB = require("escpos-usb");
 require("dotenv").config();
 
 const app = express();
@@ -13,14 +13,21 @@ const io = socketIo(server);
 
 const API_URL = process.env.API_URL;
 const PORT = process.env.PORT;
-const PRINTER_NETWORK_IP = process.env.PRINTER_NETWORK_IP;
 const TOKEN_FILE = "./jwt_token.txt";
 
 let JWT_TOKEN = null;
 let pollingInterval = null;
 
+// 프린터 설정 (USB 연결)
+const device = new escpos.USB(0x04b8, 0x0202); // TM-U220PD의 Vendor ID와 Product ID
+const printer = new escpos.Printer(device);
+
 function log(message) {
-  console.log(`[${new Date().toLocaleTimeString("en-US", { timeZone: "America/Vancouver" })}] ${message}`);
+  console.log(
+    `[${new Date().toLocaleTimeString("en-US", {
+      timeZone: "America/Vancouver",
+    })}] ${message}`
+  );
   io.emit("log", message);
 }
 
@@ -57,12 +64,14 @@ app.post("/login", async (req, res) => {
 app.get("/start", (req, res) => {
   if (!JWT_TOKEN) {
     log("Please login first");
-    return res.status(401).json({ status: "error", message: "Not authenticated" });
+    return res
+      .status(401)
+      .json({ status: "error", message: "Not authenticated" });
   }
   if (!pollingInterval) {
     log("Starting server...");
     pollOrders();
-    pollingInterval = setInterval(pollOrders, 5000);
+    pollingInterval = setInterval(pollOrders, 1000);
     updateStatus("Running");
     res.json({ status: "started" });
   } else {
@@ -93,31 +102,46 @@ async function printOrder(order) {
     return;
   }
 
-  const device = new escpos.Network(PRINTER_NETWORK_IP);
-  const printer = new escpos.Printer(device);
-
   try {
+    // 프린터 연결
     await new Promise((resolve, reject) => {
-      device.open((err) => (err ? reject(err) : resolve()));
+      device.open((err) => {
+        if (err) {
+          reject(new Error(`Printer connection error: ${err.message}`));
+        } else {
+          resolve();
+        }
+      });
     });
 
-    // 출력 시작 전 프린터 초기화
-    printer.raw(Buffer.from([0x1B, 0x40]))
-      .font("a")
-      .align("lt")
-      .feed(2);
+    // 프린터 초기화
+    printer.raw(Buffer.from([0x1b, 0x40])); // ESC @ (프린터 초기화)
 
-    // 주문 번호 (크기 설정 후 바로 출력)
+    // 기본 Code Page 설정 (영어)
+    printer.control("ESC t 0");
+
+    // 주문 번호 (글씨 크기 2배)
     printer
-      .raw(Buffer.from([0x1D, 0x21, 0x11])) // GS ! 0x11 → 가로 2배, 세로 2배
       .align("ct")
+      .style("bu")
+      .size(2, 2)
       .text(`ORDER #${order.order_number || "N/A"}`)
-      .raw(Buffer.from([0x1D, 0x21, 0x00])) // 크기 초기화
-      .align("lt")
-      .text("-".repeat(33));
+      .size(1, 1)
+      .style("normal")
+      .text("---------------------------------");
 
     // 픽업 시간
-    const orderTime = new Date(order.created_at).toLocaleString("en-US", {
+    const orderDate = new Date(order.created_at);
+    const pickupDate = new Date(order.due_at);
+    const timeDiff = Math.round((pickupDate - orderDate) / (1000 * 60));
+
+    const pickupTimeFormat = pickupDate.toLocaleString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "America/Vancouver",
+    });
+    const pickupTimeWithDateFormat = pickupDate.toLocaleString("en-US", {
       month: "short",
       day: "numeric",
       hour: "numeric",
@@ -125,53 +149,88 @@ async function printOrder(order) {
       hour12: true,
       timeZone: "America/Vancouver",
     });
-    const pickupTime = new Date(order.due_at).toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-      timeZone: "America/Vancouver",
-    });
-    const timeDiff = Math.round((new Date(order.due_at) - new Date(order.created_at)) / (1000 * 60));
-    const pickupText = timeDiff >= 0 ? `Pickup in ${timeDiff} minutes` : `Pickup ${Math.abs(timeDiff)} mins ago`;
-    printer
-      .raw(Buffer.from([0x1D, 0x21, 0x11])) // 크기 설정
-      .text(pickupText)
-      .raw(Buffer.from([0x1D, 0x21, 0x00])); // 크기 초기화
+
+    const isSameDay =
+      orderDate.toLocaleDateString("en-US", {
+        timeZone: "America/Vancouver",
+      }) ===
+      pickupDate.toLocaleDateString("en-US", { timeZone: "America/Vancouver" });
+
+    let pickupText;
+    if (!isSameDay) {
+      pickupText = `Pickup at ${pickupTimeWithDateFormat}`;
+    } else if (timeDiff < 60) {
+      pickupText = `Pickup at ${pickupTimeFormat} (in ${timeDiff} mins)`;
+    } else {
+      const hours = Math.floor(timeDiff / 60);
+      const minutes = timeDiff % 60;
+      pickupText = `Pickup at ${pickupTimeFormat} (in ${hours} hr ${minutes} mins)`;
+    }
+
+    printer.align("lt").size(2, 2).text(pickupText).size(1, 1);
 
     // 고객 정보
+    const orderTime = orderDate.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "America/Vancouver",
+    });
+
+    // 고객 이름이 한국어일 경우 Code Page 949 설정
+    const customerName = order.customer_name || "N/A";
+    const isKorean = /[\u3131-\uD79D]/.test(customerName); // 한국어 문자 여부 확인
+    if (isKorean) {
+      printer.control("ESC t 16"); // Code Page 949 (EUC-KR)
+    }
+
     printer
-      .align("lt")
-      .text(`Customer: ${order.customer_name || "N/A"}`)
+      .text(`Customer: ${customerName}`)
       .text(`Phone: ${order.customer_phone || "N/A"}`)
       .text(`Order Time: ${orderTime || "N/A"}`)
-      .text(`Pickup Time: ${pickupTime || "N/A"}`);
+      .text(`Pickup Time: ${pickupTimeWithDateFormat || "N/A"}`);
 
     // 고객 노트
     if (order.customer_notes) {
-      printer
-        .text("-".repeat(33))
-        .font("b")
-        .text("Customer Notes:")
-        .font("a");
-      wrapText(order.customer_notes, 33).forEach(line => printer.text(line));
+      printer.text("---------------------------------");
+      printer.text("Customer Notes:");
+      wrapText(order.customer_notes, 33).forEach((line) => printer.text(line));
     }
 
     // 아이템 목록
-    printer
-      .text("-".repeat(33));
+    printer.text("---------------------------------");
     if (cart.length === 0) {
       printer.text("No items in this order.");
     } else {
       cart.forEach((item, index) => {
-        const itemSubtotal = Number(item.subtotal || item.price * item.quantity || 0).toFixed(2);
-        const itemName = `${item.quantity || 1} x ${item.name || item.item_name || "Unknown"}`;
+        const itemSubtotal = Number(
+          item.subtotal || item.price * item.quantity || 0
+        ).toFixed(2);
+        const itemName = `${item.quantity || 1} x ${
+          item.name || item.item_name || "Unknown"
+        }`;
         const priceText = `  $${itemSubtotal}`;
 
-        // 아이템 크기 설정 (가로 2배, 세로 2배)
-        printer.raw(Buffer.from([0x1D, 0x21, 0x11]));
-        const lines = wrapTextWithPrice(itemName, 20, priceText); // 용지 폭 고려, maxWidth 줄임
+        // 아이템 이름이 다국어일 경우 Code Page 설정
+        const isKoreanItem = /[\u3131-\uD79D]/.test(itemName); // 한국어
+        const isChineseItem = /[\u4E00-\u9FFF]/.test(itemName); // 중국어
+        const isJapaneseItem = /[\u3040-\u30FF]/.test(itemName); // 일본어
+
+        if (isKoreanItem) {
+          printer.control("ESC t 16"); // Code Page 949 (EUC-KR)
+        } else if (isChineseItem) {
+          printer.control("ESC t 20"); // Code Page 936 (GB2312)
+        } else if (isJapaneseItem) {
+          printer.control("ESC t 17"); // Code Page 932 (Shift-JIS)
+        } else {
+          printer.control("ESC t 0"); // 기본 Code Page
+        }
+
+        // 아이템 (글씨 크기 2배)
+        printer.size(2, 2);
+        const lines = wrapTextWithPrice(itemName, 20, priceText);
         lines.forEach((line, i) => {
           if (i === 0) {
             printer.text(line.padEnd(33 - priceText.length) + priceText);
@@ -179,29 +238,46 @@ async function printOrder(order) {
             printer.text(line);
           }
         });
-        printer.raw(Buffer.from([0x1D, 0x21, 0x00])); // 크기 초기화
+        printer.size(1, 1);
 
         if (item.options && item.options.length > 0) {
           item.options.forEach((option) => {
             option.choices.forEach((choice) => {
               let optionText = `- ${choice.name || "N/A"}`;
-              let totalPrice = Number(choice.extraPrice || choice.additional_price || choice.price || 0);
+              let totalPrice = Number(
+                choice.extraPrice ||
+                  choice.additional_price ||
+                  choice.price ||
+                  0
+              );
 
               if (choice.subOptions && choice.subOptions.length > 0) {
                 choice.subOptions.forEach((subOption) => {
                   subOption.choices.forEach((subChoice) => {
-                    const subPrice = Number(subChoice.extraPrice || subChoice.additional_price || subChoice.price || 0);
+                    const subPrice = Number(
+                      subChoice.extraPrice ||
+                        subChoice.additional_price ||
+                        subChoice.price ||
+                        0
+                    );
                     totalPrice += subPrice;
                     optionText += ` - ${subChoice.name || "N/A"}`;
                   });
                 });
               }
 
-              const priceTextOption = totalPrice > 0 ? `$${totalPrice.toFixed(2)}` : "(CA$0.00)";
-              const optionLines = wrapTextWithPrice(optionText, 20, priceTextOption);
+              const priceTextOption =
+                totalPrice > 0 ? `$${totalPrice.toFixed(2)}` : "(CA$0.00)";
+              const optionLines = wrapTextWithPrice(
+                optionText,
+                20,
+                priceTextOption
+              );
               optionLines.forEach((line, i) => {
                 if (i === 0) {
-                  printer.text(line.padEnd(33 - priceTextOption.length) + priceTextOption);
+                  printer.text(
+                    line.padEnd(33 - priceTextOption.length) + priceTextOption
+                  );
                 } else {
                   printer.text(line);
                 }
@@ -211,43 +287,55 @@ async function printOrder(order) {
         }
 
         if (item.specialInstructions) {
-          printer
-            .font("b")
-            .text("- Note:")
-            .font("a");
-          wrapText(item.specialInstructions, 33).forEach(line => printer.text(`  ${line}`));
+          printer.text("- Note:");
+          wrapText(item.specialInstructions, 33).forEach((line) =>
+            printer.text(`  ${line}`)
+          );
         }
 
         if (index < cart.length - 1) {
-          printer.text("-".repeat(33));
+          printer.text("---------------------------------");
         }
       });
     }
 
     // 합계
     printer
-      .text("-".repeat(33))
+      .control("ESC t 0") // 기본 Code Page로 복귀
+      .text("---------------------------------")
       .align("rt")
       .text(`Subtotal: $${Number(order.subtotal || 0).toFixed(2)}`)
       .text(`GST (5%): $${Number(order.gst || 0).toFixed(2)}`)
       .text(`Tip: $${Number(order.tip || 0).toFixed(2)}`)
-      .raw(Buffer.from([0x1D, 0x21, 0x11])) // 총액 크기 설정
+      .size(2, 2)
       .text(`Total: $${Number(order.total || 0).toFixed(2)}`)
-      .raw(Buffer.from([0x1D, 0x21, 0x00])); // 크기 초기화
+      .size(1, 1);
 
     // 마무리
     printer
       .align("ct")
-      .text("-".repeat(33))
+      .text("---------------------------------")
       .text("Thank you for your order!")
       .text("Night Owl Cafe")
       .text("#104-8580 Cambie Rd, Richmond, BC")
       .text("(604) 276-0576")
-      .feed(3)
+      .text("\n\n\n") // 3줄 띄우기
       .cut();
 
-    log(`Printed order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP})`);
+    // 프린터 명령 실행
+    await new Promise((resolve, reject) => {
+      printer.close((err) => {
+        if (err) {
+          reject(new Error(`Printer close error: ${err.message}`));
+        } else {
+          resolve();
+        }
+      });
+    });
 
+    log(`Printed order #${order.order_number || "N/A"} on USB`);
+
+    // 주문 상태 업데이트
     await axios.post(
       `${API_URL}/update-print-status`,
       { order_id: order.id, print_status: "printed" },
@@ -255,14 +343,11 @@ async function printOrder(order) {
     );
     log(`Marked order #${order.id} as printed`);
   } catch (error) {
-    log(`Print error for order #${order.order_number || "N/A"} on Network (${PRINTER_NETWORK_IP}): ${error.message}`);
-  } finally {
-    printer
-      .raw(Buffer.from([0x1B, 0x40]))
-      .align("lt")
-      .font("a")
-      .raw(Buffer.from([0x1D, 0x21, 0x00]));
-    await new Promise((resolve) => printer.close(() => resolve()));
+    log(
+      `Print error for order #${order.order_number || "N/A"} on USB: ${
+        error.message
+      }`
+    );
   }
 }
 
@@ -296,17 +381,20 @@ async function pollOrders() {
       headers: { Cookie: `jwt_token=${JWT_TOKEN}` },
     });
     const orders = response.data || [];
-    const time = new Date().toLocaleTimeString("en-US", { timeZone: "America/Vancouver" });
+    const time = new Date().toLocaleTimeString("en-US", {
+      timeZone: "America/Vancouver",
+    });
 
     if (orders.length > 0) {
       log(`Found ${orders.length} new orders`);
       for (const order of orders) {
-        if (!order.print_status && order.payment_status === 'paid') {
+        if (!order.print_status && order.payment_status === "paid") {
           log(`Order #${order.order_number || "N/A"} detected, printing...`);
-          await printOrder(order);  // Print order first
-          await printOrder(order);  // Print order again
+          await printOrder(order);
         } else {
-          log(`Order #${order.order_number || "N/A"} already printed or not paid`);
+          log(
+            `Order #${order.order_number || "N/A"} already printed or not paid`
+          );
         }
       }
     } else {
@@ -330,7 +418,12 @@ async function pollOrders() {
 
 async function init() {
   try {
-    if (await fs.access(TOKEN_FILE).then(() => true).catch(() => false)) {
+    if (
+      await fs
+        .access(TOKEN_FILE)
+        .then(() => true)
+        .catch(() => false)
+    ) {
       JWT_TOKEN = await fs.readFile(TOKEN_FILE, "utf8");
       log("Loaded saved token");
     } else {

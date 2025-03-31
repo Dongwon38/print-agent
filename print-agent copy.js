@@ -3,6 +3,8 @@ const http = require("http");
 const socketIo = require("socket.io");
 const axios = require("axios");
 const fs = require("fs").promises;
+const ThermalPrinter = require("node-thermal-printer").printer;
+const PrinterTypes = require("node-thermal-printer").types;
 require("dotenv").config();
 
 const app = express();
@@ -18,7 +20,11 @@ let JWT_TOKEN = null;
 let pollingInterval = null;
 
 function log(message) {
-  console.log(`[${new Date().toLocaleTimeString("en-US", { timeZone: "America/Vancouver" })}] ${message}`);
+  console.log(
+    `[${new Date().toLocaleTimeString("en-US", {
+      timeZone: "America/Vancouver",
+    })}] ${message}`
+  );
   io.emit("log", message);
 }
 
@@ -55,7 +61,9 @@ app.post("/login", async (req, res) => {
 app.get("/start", (req, res) => {
   if (!JWT_TOKEN) {
     log("Please login first");
-    return res.status(401).json({ status: "error", message: "Not authenticated" });
+    return res
+      .status(401)
+      .json({ status: "error", message: "Not authenticated" });
   }
   if (!pollingInterval) {
     log("Starting server...");
@@ -91,133 +99,243 @@ async function printOrder(order) {
     return;
   }
 
-  const printerConfigs = [
-    { type: "network", ip: PRINTER_NETWORK_IP, name: `Network (${PRINTER_NETWORK_IP})` },
-  ];
+  const printer = new ThermalPrinter({
+    type: PrinterTypes.EPSON,
+    interface: `tcp://${PRINTER_NETWORK_IP}:9100`,
+    characterSet: "SLOVENIA",
+    removeSpecialCharacters: false,
+    lineCharacter: "-",
+  });
 
-  for (const config of printerConfigs) {
-    try {
-      log(`Simulating print to ${config.name}...`);
+  try {
+    // 프린터 연결 확인
+    const isConnected = await printer.isPrinterConnected();
+    if (!isConnected) {
+      throw new Error("Printer not connected");
+    }
 
-      let printOutput = [];
-      const maxWidth = 33; // 한 줄 최대 글자 수
-      const separator = "-".repeat(maxWidth);
+    // 초기화
+    printer.clear();
+    // 주문 번호 (글씨 크기 2배)
+    printer.setTextDoubleHeight();
+    printer.setTextDoubleWidth();
+    printer.alignCenter();
+    printer.println(`ORDER #${order.order_number || "N/A"}`);
+    printer.setTextNormal();
+    printer.alignLeft();
+    printer.println(`---------------------------------`);
 
-      // 픽업 시간 계산: Pickup Time - Order Time
-      const orderTime = new Date(order.created_at);
-      const pickupTime = new Date(order.due_at);
-      const timeDiff = Math.round((pickupTime - orderTime) / (1000 * 60)); // 분 단위 차이
-      const pickupText = timeDiff >= 0 ? `Pickup in ${timeDiff} minutes` : `Pickup ${Math.abs(timeDiff)} mins ago`;
-      printOutput.push(pickupText.slice(0, maxWidth));
+    // 픽업 시간
+    const orderDate = new Date(order.created_at);
+    const pickupDate = new Date(order.due_at);
 
-      // 주문 번호
-      printOutput.push(`ORDER #${order.order_number || "N/A"}`.slice(0, maxWidth));
-      printOutput.push(separator);
+    // 시간 차이 계산 (분 단위)
+    const timeDiff = Math.round((pickupDate - orderDate) / (1000 * 60));
 
-      // 고객 정보 (Email 제거)
-      printOutput.push(formatLine("Customer:", order.customer_name || "N/A", maxWidth));
-      printOutput.push(formatLine("Phone:", order.customer_phone || "N/A", maxWidth));
-      printOutput.push(formatLine("Order Time:", order.created_at || "N/A", maxWidth));
-      printOutput.push(formatLine("Pickup Time:", order.due_at || "N/A", maxWidth));
-      printOutput.push(formatLine("Order Type:", order.order_type || "N/A", maxWidth));
+    // 픽업 시간 포맷팅
+    const pickupTimeFormat = pickupDate.toLocaleString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "America/Vancouver",
+    });
+    const pickupTimeWithDateFormat = pickupDate.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "America/Vancouver",
+    });
 
-      // 고객 메모
-      if (order.customer_notes) {
-        printOutput.push(separator);
-        printOutput.push("Customer Notes:");
-        wrapText(order.customer_notes, maxWidth).forEach(line => printOutput.push(line));
-      }
+    // 주문 날짜와 픽업 날짜 비교
+    const isSameDay =
+      orderDate.toLocaleDateString("en-US", {
+        timeZone: "America/Vancouver",
+      }) ===
+      pickupDate.toLocaleDateString("en-US", { timeZone: "America/Vancouver" });
 
-      // 아이템 목록
-      printOutput.push(separator);
-      printOutput.push("Items:");
-      if (cart.length === 0) {
-        printOutput.push("No items in this order.");
-      } else {
-        cart.forEach((item, index) => {
-          if (index > 0) printOutput.push(""); // 아이템 간 1줄 여백
-          const itemSubtotal = Number(item.subtotal || item.price * item.quantity || 0).toFixed(2);
-          const itemName = `${item.quantity || 1} x ${item.name || item.item_name || "Unknown"}`;
-          printOutput.push(formatLine(itemName, `$${itemSubtotal}`, maxWidth));
-          printOutput.push(formatLine("- Base Price:", `$${Number(item.basePrice || item.price || 0).toFixed(2)}`, maxWidth));
+    let pickupText;
+    if (!isSameDay) {
+      // 주문 날짜와 픽업 날짜가 다를 경우 (다음 날부터)
+      pickupText = `Pickup at ${pickupTimeWithDateFormat}`;
+    } else if (timeDiff < 60) {
+      // 1시간 이내
+      pickupText = `Pickup at ${pickupTimeFormat} (in ${timeDiff} mins)`;
+    } else {
+      // 1시간 이상
+      const hours = Math.floor(timeDiff / 60);
+      const minutes = timeDiff % 60;
+      pickupText = `Pickup at ${pickupTimeFormat} (in ${hours} hr ${minutes} mins)`;
+    }
 
-          if (item.options && item.options.length > 0) {
-            item.options.forEach((option) => {
-              option.choices.forEach((choice) => {
-                let optionText = `- ${choice.name || "N/A"}`;
-                let totalPrice = Number(choice.extraPrice || choice.additional_price || choice.price || 0);
+    printer.setTextDoubleHeight();
+    printer.println(pickupText);
+    printer.setTextNormal();
 
-                if (choice.subOptions && choice.subOptions.length > 0) {
-                  choice.subOptions.forEach((subOption) => {
-                    subOption.choices.forEach((subChoice) => {
-                      const subPrice = Number(subChoice.extraPrice || subChoice.additional_price || subChoice.price || 0);
-                      totalPrice += subPrice;
-                      optionText += ` - ${subChoice.name || "N/A"}`;
-                    });
-                  });
-                }
+    // 고객 정보
+    printer.alignLeft();
+    const orderTime = orderDate.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "America/Vancouver",
+    });
+    printer.println(`Customer: ${order.customer_name || "N/A"}`);
+    printer.println(`Phone: ${order.customer_phone || "N/A"}`);
+    printer.println(`Order Time: ${orderTime || "N/A"}`);
+    printer.println(`Pickup Time: ${pickupTimeWithDateFormat || "N/A"}`);
 
-                const priceText = totalPrice > 0 ? `$${totalPrice.toFixed(2)}` : "Free";
-                printOutput.push(formatLine(optionText, priceText, maxWidth));
-              });
-            });
-          }
+    // 고객 노트
+    if (order.customer_notes) {
+      printer.drawLine();
+      printer.setTextNormal();
+      printer.println("Customer Notes:");
+      wrapText(order.customer_notes, 33).forEach((line) =>
+        printer.println(line)
+      );
+    }
 
-          if (item.specialInstructions) {
-            printOutput.push("- Note:");
-            wrapText(item.specialInstructions, maxWidth).forEach(line => printOutput.push(`  ${line}`));
+    // 아이템 목록
+    printer.drawLine();
+    if (cart.length === 0) {
+      printer.println("No items in this order.");
+    } else {
+      cart.forEach((item, index) => {
+        const itemSubtotal = Number(
+          item.subtotal || item.price * item.quantity || 0
+        ).toFixed(2);
+        const itemName = `${item.quantity || 1} x ${
+          item.name || item.item_name || "Unknown"
+        }`;
+        const priceText = `  $${itemSubtotal}`;
+
+        // 아이템 (글씨 크기 2배)
+        printer.setTextDoubleHeight();
+        const lines = wrapTextWithPrice(itemName, 20, priceText);
+        lines.forEach((line, i) => {
+          if (i === 0) {
+            printer.println(line.padEnd(33 - priceText.length) + priceText);
+          } else {
+            printer.println(line);
           }
         });
-      }
+        printer.setTextNormal();
 
-      // 합계 (Bag Fee 제거)
-      printOutput.push(separator);
-      printOutput.push(formatLine("Subtotal:", `$${Number(order.subtotal || 0).toFixed(2)}`, maxWidth));
-      printOutput.push(formatLine("GST (5%):", `$${Number(order.gst || 0).toFixed(2)}`, maxWidth));
-      printOutput.push(formatLine("PST:", `$${Number(order.pst || 0).toFixed(2)}`, maxWidth));
-      printOutput.push(formatLine("Deposit Fee:", `$${Number(order.deposit_fee || 0).toFixed(2)}`, maxWidth));
-      printOutput.push(formatLine("Tip:", `$${Number(order.tip || 0).toFixed(2)}`, maxWidth));
-      printOutput.push(formatLine("Total:", `$${Number(order.total || 0).toFixed(2)}`, maxWidth));
-      printOutput.push(separator);
+        if (item.options && item.options.length > 0) {
+          item.options.forEach((option) => {
+            option.choices.forEach((choice) => {
+              let optionText = `- ${choice.name || "N/A"}`;
+              let totalPrice = Number(
+                choice.extraPrice ||
+                  choice.additional_price ||
+                  choice.price ||
+                  0
+              );
 
-      // 레스토랑 정보 추가
-      printOutput.push("Thank you for your order!");
-      printOutput.push("Night Owl Cafe");
-      printOutput.push("(604) 276-0576");
+              if (choice.subOptions && choice.subOptions.length > 0) {
+                choice.subOptions.forEach((subOption) => {
+                  subOption.choices.forEach((subChoice) => {
+                    const subPrice = Number(
+                      subChoice.extraPrice ||
+                        subChoice.additional_price ||
+                        subChoice.price ||
+                        0
+                    );
+                    totalPrice += subPrice;
+                    optionText += ` - ${subChoice.name || "N/A"}`;
+                  });
+                });
+              }
 
-      // 출력 시뮬레이션
-      log(`Print simulation for order #${order.order_number || "N/A"}:`);
-      printOutput.forEach((line) => log(line));
-      log(`Simulated print completed for order #${order.order_number || "N/A"} on ${config.name}`);
+              const priceTextOption =
+                totalPrice > 0 ? `$${totalPrice.toFixed(2)}` : "(CA$0.00)";
+              const optionLines = wrapTextWithPrice(
+                optionText,
+                20,
+                priceTextOption
+              );
+              optionLines.forEach((line, i) => {
+                if (i === 0) {
+                  printer.println(
+                    line.padEnd(33 - priceTextOption.length) + priceTextOption
+                  );
+                } else {
+                  printer.println(line);
+                }
+              });
+            });
+          });
+        }
 
-      await axios.post(
-        `${API_URL}/update-print-status`,
-        { order_id: order.id, print_status: "printed" },
-        { headers: { Cookie: `jwt_token=${JWT_TOKEN}` } }
-      );
-      log(`Marked order #${order.id} as printed`);
-    } catch (error) {
-      log(`Print simulation error for order #${order.order_number || "N/A"} on ${config.name}: ${error.message}`);
+        if (item.specialInstructions) {
+          printer.println("- Note:");
+          wrapText(item.specialInstructions, 33).forEach((line) =>
+            printer.println(`  ${line}`)
+          );
+        }
+
+        if (index < cart.length - 1) {
+          printer.drawLine();
+        }
+      });
     }
+
+    // 합계
+    printer.drawLine();
+    printer.alignRight();
+    printer.println(`Subtotal: $${Number(order.subtotal || 0).toFixed(2)}`);
+    printer.println(`GST (5%): $${Number(order.gst || 0).toFixed(2)}`);
+    printer.println(`Tip: $${Number(order.tip || 0).toFixed(2)}`);
+    printer.setTextDoubleHeight();
+    printer.println(`Total: $${Number(order.total || 0).toFixed(2)}`);
+    printer.setTextNormal();
+
+    // 마무리
+    printer.alignCenter();
+    printer.drawLine();
+    printer.println("Thank you for your order!");
+    printer.println("Night Owl Cafe");
+    printer.println("#104-8580 Cambie Rd, Richmond, BC");
+    printer.println("(604) 276-0576");
+    printer.newLine();
+    printer.newLine();
+    printer.newLine();
+    printer.cut();
+
+    await printer.execute();
+    log(
+      `Printed order #${
+        order.order_number || "N/A"
+      } on Network (${PRINTER_NETWORK_IP})`
+    );
+
+    await axios.post(
+      `${API_URL}/update-print-status`,
+      { order_id: order.id, print_status: "printed" },
+      { headers: { Cookie: `jwt_token=${JWT_TOKEN}` } }
+    );
+    log(`Marked order #${order.id} as printed`);
+  } catch (error) {
+    log(
+      `Print error for order #${
+        order.order_number || "N/A"
+      } on Network (${PRINTER_NETWORK_IP}): ${error.message}`
+    );
+  } finally {
+    printer.clear();
+    await printer.execute();
   }
 }
 
-// 텍스트를 최대 너비에 맞게 포맷팅하는 함수
-function formatLine(label, value, maxWidth) {
-  const totalLength = label.length + value.length;
-  if (totalLength > maxWidth) {
-    const availableLabelWidth = maxWidth - value.length - 1; // 1은 공백
-    return `${label.slice(0, availableLabelWidth)} ${value}`;
-  }
-  return `${label}${" ".repeat(maxWidth - totalLength)}${value}`;
-}
-
-// 긴 텍스트를 여러 줄로 나누는 함수
-function wrapText(text, maxWidth) {
-  const words = text.split(" ");
+// 긴 텍스트를 가격과 분리해서 줄 바꿈 처리
+function wrapTextWithPrice(text, maxWidth, price) {
   const lines = [];
   let currentLine = "";
 
+  const words = text.split(" ");
   words.forEach((word) => {
     if ((currentLine + " " + word).length <= maxWidth) {
       currentLine += (currentLine ? " " : "") + word;
@@ -242,17 +360,21 @@ async function pollOrders() {
       headers: { Cookie: `jwt_token=${JWT_TOKEN}` },
     });
     const orders = response.data || [];
-    const time = new Date().toLocaleTimeString("en-US", { timeZone: "America/Vancouver" });
+    const time = new Date().toLocaleTimeString("en-US", {
+      timeZone: "America/Vancouver",
+    });
 
     if (orders.length > 0) {
       log(`Found ${orders.length} new orders`);
       for (const order of orders) {
-        if (!order.print_status && order.payment_status === 'paid') { // order_status 체크 제거
+        if (!order.print_status && order.payment_status === "paid") {
           log(`Order #${order.order_number || "N/A"} detected, printing...`);
-          await printOrder(order);
-          await printOrder(order);
+          await printOrder(order); // Print order first
+          // await printOrder(order);  // Print order again (주석 처리된 부분 유지)
         } else {
-          log(`Order #${order.order_number || "N/A"} already printed or not paid`);
+          log(
+            `Order #${order.order_number || "N/A"} already printed or not paid`
+          );
         }
       }
     } else {
@@ -276,7 +398,12 @@ async function pollOrders() {
 
 async function init() {
   try {
-    if (await fs.access(TOKEN_FILE).then(() => true).catch(() => false)) {
+    if (
+      await fs
+        .access(TOKEN_FILE)
+        .then(() => true)
+        .catch(() => false)
+    ) {
       JWT_TOKEN = await fs.readFile(TOKEN_FILE, "utf8");
       log("Loaded saved token");
     } else {
@@ -299,5 +426,19 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => log("Client disconnected"));
 });
 
+function wrapText(text, maxWidth) {
+  const words = text.split(" ");
+  const lines = [];
+  let currentLine = "";
 
-// =================================================================================================
+  words.forEach((word) => {
+    if ((currentLine + " " + word).length <= maxWidth) {
+      currentLine += (currentLine ? " " : "") + word;
+    } else {
+      if (currentLine) lines.push(currentLine);
+      currentLine = word.length <= maxWidth ? word : word.slice(0, maxWidth);
+    }
+  });
+  if (currentLine) lines.push(currentLine);
+  return lines;
+}

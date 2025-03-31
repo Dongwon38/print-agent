@@ -71,7 +71,7 @@ app.get("/start", (req, res) => {
   if (!pollingInterval) {
     log("Starting server...");
     pollOrders();
-    pollingInterval = setInterval(pollOrders, 1000);
+    pollingInterval = setInterval(pollOrders, 5000);
     updateStatus("Running");
     res.json({ status: "started" });
   } else {
@@ -125,7 +125,7 @@ async function printOrder(order) {
       .align("ct")
       .style("bu")
       .size(2, 2)
-      .text(`ORDER #${order.order_number || "N/A"}`)
+      .text(`#${order.order_number || "N/A"}`)
       .size(1, 1)
       .style("normal")
       .text("---------------------------------");

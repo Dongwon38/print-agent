@@ -26,6 +26,7 @@ const MAX_LINE_CHARS = 40;
 
 let JWT_TOKEN = null;
 let pollingInterval = null;
+const GSTNumber = 872046354;
 
 function log(message) {
   console.log(
@@ -381,6 +382,7 @@ function printOrder(order) {
         .text("Night Owl Cafe")
         .text("#104-8580 Cambie Rd, Richmond, BC")
         .text("(604) 276-0576")
+        .text(`GST Number: ${GSTNumber}`)
         .text("\n\n\n") // 3줄 띄우기
         .cut();
 

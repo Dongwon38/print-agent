@@ -177,23 +177,21 @@ function printOrder(order) {
     return;
   }
 
+  // 오더 넘버에서 마지막 4자리 추출
   const shortOrderNumber = order.order_number.split("-")[1] || "N/A";
 
   // 시리얼 포트 열기
   serialPort.on("open", () => {
-    log("Serial port opened successfully");
+    log("Serial port opened");
 
     try {
       // 프린터 초기화
-      log("Initializing printer...");
       printer.raw(Buffer.from([0x1b, 0x40])); // ESC @ (프린터 초기화)
 
       // 기본 Code Page 설정 (영어: PC437)
       printer.raw(Buffer.from([0x1b, 0x74, 0x00])); // ESC t 0
-      log("Printer initialized with Code Page PC437");
 
       // 1. 고객용 영수증
-      log("Printing customer receipt...");
       // 고객 이름과 오더 넘버 (중앙 정렬, 세로 2배 크기)
       printer
         .align("lt")
@@ -213,8 +211,11 @@ function printOrder(order) {
       printer
         .raw(Buffer.from([0x1d, 0x21, 0x00])) // GS ! 0x00 (기본 크기)
         .text(`Pickup at ${pickupTimeFormat}`);
+
+      // 구분선
       printer.text("----------------------------------------");
 
+      // 고객 정보 (기본 크기)
       const orderDate = new Date(order.created_at);
       const orderTime = orderDate.toLocaleString("en-US", {
         month: "short",
@@ -226,8 +227,8 @@ function printOrder(order) {
       });
 
       printer
-        .text(`Order at ${orderTime || "N/A"}`)
-        .text(`Phone: ${order.customer_phone || "N/A"}`);
+        .text(`Phone: ${order.customer_phone || "N/A"}`)
+        .text(`Order Time: ${orderTime || "N/A"}`);
 
       // 고객 노트 (기본 크기)
       if (order.customer_notes) {
@@ -236,6 +237,8 @@ function printOrder(order) {
           printer.text(`  ${line}`)
         );
       }
+
+      // 여백 1줄 추가
       printer.text("\n");
 
       // 아이템 목록 (기본 크기, 메뉴 좌측, 금액 우측)
@@ -244,21 +247,19 @@ function printOrder(order) {
       } else {
         cart.forEach((item, index) => {
           const itemSubtotal = Number(
-            item.subtotal || (item.basePrice || item.price) * (item.quantity || 1) || 0
+            item.subtotal || item.price * item.quantity || 0
           ).toFixed(2);
           const itemName = `${item.quantity || 1} x ${
             item.name || item.item_name || "Unknown"
           }`;
-          const priceText = itemSubtotal.padStart(5, " "); // 5자리로 고정
+          const priceText = itemSubtotal.padStart(4, " "); // 4자리로 고정
 
           // 아이템 이름이 중국어 번체 포함 여부 확인
           const isChineseItem = /[\u4E00-\u9FFF]/.test(itemName);
           if (isChineseItem) {
             printer.raw(Buffer.from([0x1b, 0x74, 0x15])); // ESC t 0x15 (Code Page 950, Big5)
-            log(`Set Code Page to Big5 for item: ${itemName}`);
           } else {
             printer.raw(Buffer.from([0x1b, 0x74, 0x00])); // ESC t 0 (PC437)
-            log(`Set Code Page to PC437 for item: ${itemName}`);
           }
 
           // 아이템 이름 길이 계산 ("1 x" 포함)
@@ -269,7 +270,7 @@ function printOrder(order) {
             lines.forEach((line) => printer.text(line));
           } else {
             // 길이가 35자 이하: 공백 계산 후 한 줄로 출력
-            const spaceLength = 40 - itemNameLength - 8; // 40 - 이름 길이 - 8
+            const spaceLength = 40 - itemNameLength - 4; // 40 - 이름 길이 - 4
             const spaces = " ".repeat(Math.max(0, spaceLength)); // 음수 방지
             printer.text(`${itemName}${spaces}${priceText}`);
           }
@@ -307,14 +308,12 @@ function printOrder(order) {
                 const isChineseOption = /[\u4E00-\u9FFF]/.test(optionText);
                 if (isChineseOption) {
                   printer.raw(Buffer.from([0x1b, 0x74, 0x15])); // ESC t 0x15 (Code Page 950, Big5)
-                  log(`Set Code Page to Big5 for option: ${optionText}`);
                 } else {
                   printer.raw(Buffer.from([0x1b, 0x74, 0x00])); // ESC t 0 (PC437)
-                  log(`Set Code Page to PC437 for option: ${optionText}`);
                 }
 
                 // 옵션 이름 길이 계산 ("- " 포함)
-                const optionNameLength = (choice.name || "N/A").length + 3; // "- " (2자) 포함
+                const optionNameLength = (choice.name || "N/A").length + 2; // "- " (2자) 포함
                 if (optionNameLength > 35) {
                   // 길이가 35자 초과: wrapTextWithPrice 사용
                   const optionLines = wrapTextWithPrice(
@@ -325,7 +324,7 @@ function printOrder(order) {
                   optionLines.forEach((line) => printer.text(line));
                 } else {
                   // 길이가 35자 이하: 공백 계산 후 한 줄로 출력
-                  const spaceLength = 40 - optionNameLength - 8; // 40 - 이름 길이 - 8
+                  const spaceLength = 40 - optionNameLength - 4; // 40 - 이름 길이 - 4
                   const spaces = " ".repeat(Math.max(0, spaceLength)); // 음수 방지
                   printer.text(`${optionText}${spaces}${priceTextOption}`);
                 }
@@ -340,12 +339,10 @@ function printOrder(order) {
             );
             if (isChineseNote) {
               printer.raw(Buffer.from([0x1b, 0x74, 0x15])); // ESC t 0x15 (Code Page 950, Big5)
-              log(`Set Code Page to Big5 for note: ${item.specialInstructions}`);
             } else {
               printer.raw(Buffer.from([0x1b, 0x74, 0x00])); // ESC t 0 (PC437)
-              log(`Set Code Page to PC437 for note: ${item.specialInstructions}`);
             }
-            printer.text("- Note: ");
+            printer.text("- Note:");
             wrapText(item.specialInstructions, MAX_LINE_CHARS).forEach(
               (line) => printer.text(`  ${line}`)
             );
@@ -385,11 +382,10 @@ function printOrder(order) {
         .cut();
 
       // 2. 주방용 영수증 (아이템별로 출력)
-      log("Printing kitchen receipts...");
       cart.forEach((item, itemIndex) => {
         // 고객 이름과 오더 넘버 (중앙 정렬, 세로 2배 크기)
         printer
-          .align("lt")
+          .align("ct")
           .raw(Buffer.from([0x1d, 0x21, 0x10])) // GS ! 0x10 (세로 2배 크기)
           .text(`${order.customer_name || "N/A"}(${shortOrderNumber})`);
 
@@ -407,7 +403,7 @@ function printOrder(order) {
         });
         printer
           .align("lt")
-          .text(`Pickup`);
+          .text(`Takeout`);
         printer.text(`${pickupTimeShort}, ${pickupDateShort}`);
 
         // 구분선
@@ -424,10 +420,8 @@ function printOrder(order) {
         const isChineseItem = /[\u4E00-\u9FFF]/.test(itemName);
         if (isChineseItem) {
           printer.raw(Buffer.from([0x1b, 0x74, 0x15])); // ESC t 0x15 (Code Page 950, Big5)
-          log(`Set Code Page to Big5 for kitchen item: ${itemName}`);
         } else {
           printer.raw(Buffer.from([0x1b, 0x74, 0x00])); // ESC t 0 (PC437)
-          log(`Set Code Page to PC437 for kitchen item: ${itemName}`);
         }
 
         printer
@@ -453,10 +447,8 @@ function printOrder(order) {
               const isChineseOption = /[\u4E00-\u9FFF]/.test(optionText);
               if (isChineseOption) {
                 printer.raw(Buffer.from([0x1b, 0x74, 0x15])); // ESC t 0x15 (Code Page 950, Big5)
-                log(`Set Code Page to Big5 for kitchen option: ${optionText}`);
               } else {
                 printer.raw(Buffer.from([0x1b, 0x74, 0x00])); // ESC t 0 (PC437)
-                log(`Set Code Page to PC437 for kitchen option: ${optionText}`);
               }
 
               wrapText(optionText, MAX_LINE_CHARS, true).forEach((line) =>
@@ -466,19 +458,27 @@ function printOrder(order) {
           });
         }
 
-        // 노트 (가로 2배 세로 2배 크기)
+        // 노트 (가로 2배 세로 2배 크기, 중국어 번체만 출력)
         if (item.specialInstructions) {
-          printer.raw(Buffer.from([0x1b, 0x74, 0x00])); // ESC t 0 (PC437)
-          printer.text("- Note: ");
-          wrapText(item.specialInstructions, MAX_LINE_CHARS).forEach(
-            (line) => printer.text(`  ${line}`)
+          const isChineseNote = /[\u4E00-\u9FFF]/.test(
+            item.specialInstructions
+          );
+          if (isChineseNote) {
+            printer.raw(Buffer.from([0x1b, 0x74, 0x15])); // ESC t 0x15 (Code Page 950, Big5)
+          } else {
+            printer.raw(Buffer.from([0x1b, 0x74, 0x00])); // ESC t 0 (PC437)
+          }
+          printer.text("- Note:");
+          const chineseNote = extractChineseText(item.specialInstructions);
+          wrapText(chineseNote, MAX_LINE_CHARS, true).forEach((line) =>
+            printer.text(`  ${line}`)
           );
         }
 
         printer.raw(Buffer.from([0x1d, 0x21, 0x00])); // GS ! 0x00 (기본 크기로 복귀)
 
         // 하단 여백 및 절단
-        printer.text("\n\n").cut();
+        printer.text("\n\n\n").cut();
       });
 
       printer.close();
@@ -493,14 +493,9 @@ function printOrder(order) {
     }
   });
 
-  // 시리얼 포트 에러 핸들링
+  // 에러 핸들링
   serialPort.on("error", (err) => {
     log(`Serial port error: ${err.message}`);
-  });
-
-  // 시리얼 포트 열기 실패 시 에러 핸들링
-  serialPort.on("close", () => {
-    log("Serial port closed unexpectedly");
   });
 }
 

@@ -52,7 +52,7 @@ const device = new escpos.USB(
 const options = { encoding: "GB18030" };
 let printer = null;
 
-const API_URL = process.env.API_URL;
+const API_URL = process.env.NOC_API_URL;
 const PORT = process.env.PORT || 3000;
 const TOKEN_FILE = "./jwt_token.txt";
 const GSTNumber = "872046354";

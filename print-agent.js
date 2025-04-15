@@ -11,7 +11,7 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
-// Printer Settings
+// 프린터 설정
 const devices = escpos.USB.findPrinter();
 if (devices.length === 0) {
   console.log("No USB printer found");
@@ -30,12 +30,11 @@ const PORT = process.env.PORT || 3000;
 const TOKEN_FILE = "./jwt_token.txt";
 const GSTNumber = "872046354";
 const MAX_LINE_CHARS = 48;
-const PRICE_WIDTH = 8; // 가격란은 항상 8칸 (공백 2칸 + "000.00")
 
 let JWT_TOKEN = null;
 let pollingInterval = null;
 
-// Reset printer
+// 프린터 초기화
 async function initializePrinter() {
   return new Promise((resolve, reject) => {
     device.open((error) => {
@@ -50,7 +49,7 @@ async function initializePrinter() {
   });
 }
 
-// 로그 출력 및 클라이언트로 전송
+// 로그 출력
 function log(message) {
   const timestamp = new Date().toLocaleTimeString("en-US", {
     timeZone: "America/Vancouver",
@@ -64,7 +63,7 @@ function updateStatus(status) {
   io.emit("status", status);
 }
 
-// 텍스트 길이 계산 (영어 1칸, 중국어 2칸)
+// 글자 수 계산 (중국어 2칸)
 function calculateTextLength(text) {
   let length = 0;
   for (const char of text) {
@@ -74,15 +73,35 @@ function calculateTextLength(text) {
       length += 1; // 영어 및 기타는 1칸
     }
   }
+  log(`Text: "${text}", Calculated Length: ${length}`);
   return length;
 }
 
-// wrapTextWithPrice 함수 (줄바꿈 시 가격란 비워두기)
-function wrapTextWithPrice(text, price, prefixLength = 0) {
+// 가격 포맷팅 함수
+function formatPrice(price) {
+  const priceStr = price.toString();
+  const priceLength = priceStr.length;
+  let padding;
+  if (priceLength === 4) padding = 4; // "0.00" → "    0.00"
+  else if (priceLength === 5) padding = 3; // "17.45" → "   17.45"
+  else padding = 2; // "123.45" → "  123.45"
+  const formatted = " ".repeat(padding) + priceStr;
+  log(`Formatted Price: "${priceStr}" → "${formatted}"`);
+  return formatted;
+}
+
+// wrapTextWithPrice 함수 (여백 조정)
+function wrapTextWithPrice(text, prefix, price) {
   const lines = [];
-  const priceText = price.toString().padStart(5, " "); // "  00.00" 형식
-  const maxTextWidth = MAX_LINE_CHARS - PRICE_WIDTH - prefixLength; // 가격란 제외한 최대 텍스트 길이
-  const priceLineWidth = MAX_LINE_CHARS - PRICE_WIDTH; // 가격란 제외한 줄 길이
+  const priceText = formatPrice(price);
+  const priceLength = priceText.length;
+  const prefixLength = calculateTextLength(prefix);
+
+  // 첫째 줄 가능 길이 계산 (여백 2칸 포함)
+  const firstLineAvailableWidth =
+    MAX_LINE_CHARS - prefixLength - priceLength - 2;
+  // 이후 줄 가능 길이 (여백 2칸 포함)
+  const subsequentLineAvailableWidth = MAX_LINE_CHARS - priceLength - 2;
 
   let currentLine = "";
   let currentLineLength = 0;
@@ -90,17 +109,35 @@ function wrapTextWithPrice(text, price, prefixLength = 0) {
 
   for (const char of text) {
     const charLength = /[\u4E00-\u9FFF]/.test(char) ? 2 : 1;
-    if (currentLineLength + charLength <= maxTextWidth) {
+    const availableWidth = isFirstLine
+      ? firstLineAvailableWidth
+      : subsequentLineAvailableWidth;
+
+    if (currentLineLength + charLength <= availableWidth) {
       currentLine += char;
       currentLineLength += charLength;
     } else {
       if (currentLine) {
-        if (isFirstLine) {
-          lines.push(currentLine.padEnd(priceLineWidth, " ") + priceText);
-          isFirstLine = false;
-        } else {
-          lines.push(currentLine.padEnd(priceLineWidth, " "));
-        }
+        // 실제 출력 줄 구성: prefix + 텍스트 + 여백(1~2칸) + 가격
+        const actualLine = isFirstLine ? prefix + currentLine : currentLine;
+        const actualLineLength = calculateTextLength(actualLine);
+        const remainingSpace = MAX_LINE_CHARS - actualLineLength - priceLength;
+        const spaces = " ".repeat(Math.max(1, Math.min(2, remainingSpace))); // 1~2칸 여백
+        const line = actualLine + spaces + priceText;
+        lines.push(line);
+        log(
+          `WrapTextWithPrice - ${
+            isFirstLine ? "Line 1" : "Wrapped Line"
+          }: "${line}"`
+        );
+        log(
+          `Actual Line Length: ${actualLineLength}, Spaces: ${spaces.length}, Price Length: ${priceLength}`
+        );
+
+        isFirstLine = false;
+        currentLine = char;
+        currentLineLength = charLength;
+      } else {
         currentLine = char;
         currentLineLength = charLength;
       }
@@ -108,39 +145,48 @@ function wrapTextWithPrice(text, price, prefixLength = 0) {
   }
 
   if (currentLine) {
-    if (isFirstLine) {
-      lines.push(currentLine.padEnd(priceLineWidth, " ") + priceText);
-    } else {
-      lines.push(currentLine.padEnd(priceLineWidth, " "));
-    }
+    const actualLine = isFirstLine ? prefix + currentLine : currentLine;
+    const actualLineLength = calculateTextLength(actualLine);
+    const remainingSpace = MAX_LINE_CHARS - actualLineLength - priceLength;
+    const spaces = " ".repeat(Math.max(1, Math.min(2, remainingSpace))); // 1~2칸 여백
+    const line = actualLine + spaces + priceText;
+    lines.push(line);
+    log(
+      `WrapTextWithPrice - ${
+        isFirstLine ? "Line 1" : "Wrapped Line"
+      }: "${line}"`
+    );
+    log(
+      `Actual Line Length: ${actualLineLength}, Spaces: ${spaces.length}, Price Length: ${priceLength}`
+    );
   }
 
   return lines;
 }
 
-// wrapText 함수 (자수 계산 반영)
-function wrapText(text, maxWidth, addSpacing = false, prefixLength = 0) {
+// wrapText 함수
+function wrapText(text, maxWidth, addSpacing = false) {
   const lines = [];
   let currentLine = "";
   let currentLineLength = 0;
-  const effectiveMaxWidth = maxWidth - prefixLength;
 
   for (const char of text) {
     const charLength = /[\u4E00-\u9FFF]/.test(char) ? 2 : 1;
-    if (currentLineLength + charLength <= effectiveMaxWidth) {
+    if (currentLineLength + charLength <= maxWidth) {
       currentLine += char;
       currentLineLength += charLength;
     } else {
       if (currentLine) {
-        lines.push(currentLine.padEnd(effectiveMaxWidth, " "));
-        currentLine = char;
-        currentLineLength = charLength;
+        lines.push(currentLine);
+        log(`WrapText - Wrapped Line: "${currentLine}"`);
       }
+      currentLine = char;
+      currentLineLength = charLength;
     }
   }
-
   if (currentLine) {
-    lines.push(currentLine.padEnd(effectiveMaxWidth, " "));
+    lines.push(currentLine);
+    log(`WrapText - Line: "${currentLine}"`);
   }
 
   if (addSpacing) {
@@ -158,15 +204,15 @@ function extractChineseText(text) {
 // 동적 데이터로 영수증 출력
 async function printOrder(order) {
   try {
-    log("Received order data: " + JSON.stringify(order, null, 2));
-
     // order.cart 파싱
     let cart = [];
     if (order.cart) {
       try {
         cart = JSON.parse(order.cart);
       } catch (e) {
-        log(`Error parsing cart for order #${order.order_number}: ${e.message}`);
+        log(
+          `Error parsing cart for order #${order.order_number}: ${e.message}`
+        );
         return;
       }
     }
@@ -218,14 +264,9 @@ async function printOrder(order) {
     const total = Number(order.total || 0);
 
     // 1. 고객용 영수증 출력
-    log("Printing customer receipt...");
-
-    // 프린터 초기화 명령
-    log("Sending printer initialization command for customer receipt...");
-    printer.raw(Buffer.from([0x1B, 0x40])); // 프린터 초기화
+    printer.raw(Buffer.from([0x1b, 0x40])); // 프린터 초기화
 
     // 고객 정보
-    log("Printing customer info...");
     printer
       .font("a")
       .align("LT")
@@ -238,85 +279,101 @@ async function printOrder(order) {
       .text(`Phone: ${phone}`);
 
     if (order.customer_notes) {
-      log("Printing customer notes...");
       printer.text("Customer Notes:");
-      wrapText(order.customer_notes, MAX_LINE_CHARS, false, 2).forEach((line) =>
+      wrapText(order.customer_notes, MAX_LINE_CHARS - 2).forEach((line) =>
         printer.text(`  ${line}`)
       );
     }
-    printer.text("------------------------------------------------");
+    printer.text("-".repeat(MAX_LINE_CHARS));
 
     // 아이템 목록
     if (items.length === 0) {
-      log("No items in this order");
       printer.text("No items in this order.");
     } else {
-      log("Printing items...");
       items.forEach((item, index) => {
         const itemSubtotal = Number(
-          item.subtotal || (item.basePrice || item.price) * (item.quantity || 1) || 0
+          item.subtotal ||
+            (item.basePrice || item.price) * (item.quantity || 1) ||
+            0
         ).toFixed(2);
-        const itemName = `${item.quantity || 1} x ${item.name || item.item_name || "Unknown"}`;
-        const lines = wrapTextWithPrice(itemName, itemSubtotal, 4); // "1 x " = 4칸
+        const itemName = `${item.quantity || 1} x ${
+          item.name || item.item_name || "Unknown"
+        }`;
+        const prefix = `${item.quantity || 1} x `;
+
+        const lines = wrapTextWithPrice(
+          itemName.slice(prefix.length),
+          prefix,
+          itemSubtotal
+        );
         lines.forEach((line) => printer.text(line));
 
         // 옵션 출력
         if (item.options && item.options.length > 0) {
-          log("Printing options...");
           item.options.forEach((option) => {
             option.choices.forEach((choice) => {
-              const optionText = `- ${choice.name || "N/A"}`;
+              let optionText = `${choice.name || "N/A"}`;
               let totalPrice = Number(
-                choice.extraPrice || choice.additional_price || choice.price || 0
-              ).toFixed(2);
-              const optionLines = wrapTextWithPrice(optionText, totalPrice, 2); // "- " = 2칸
-              optionLines.forEach((line) => printer.text(line));
+                choice.extraPrice ||
+                  choice.additional_price ||
+                  choice.price ||
+                  0
+              );
 
               if (choice.subOptions && choice.subOptions.length > 0) {
                 choice.subOptions.forEach((subOption) => {
                   subOption.choices.forEach((subChoice) => {
-                    const subOptionText = ` - ${subChoice.name || "N/A"}`;
                     const subPrice = Number(
-                      subChoice.extraPrice || subChoice.additional_price || subChoice.price || 0
-                    ).toFixed(2);
-                    totalPrice = (Number(totalPrice) + Number(subPrice)).toFixed(2);
-                    const subOptionLines = wrapTextWithPrice(subOptionText, subPrice, 3); // " - " = 3칸
-                    subOptionLines.forEach((line) => printer.text(line));
+                      subChoice.extraPrice ||
+                        subChoice.additional_price ||
+                        subChoice.price ||
+                        0
+                    );
+                    totalPrice = Number(totalPrice) + Number(subPrice);
+                    optionText += ` (${subChoice.name || "N/A"})`;
                   });
                 });
               }
+
+              totalPrice = totalPrice.toFixed(2);
+              const optionPrefix = "- ";
+              const optionLines = wrapTextWithPrice(
+                optionText,
+                optionPrefix,
+                totalPrice
+              );
+              optionLines.forEach((line) => printer.text(line));
             });
           });
         }
 
         // 특이사항
         if (item.specialInstructions) {
-          log("Printing special instructions...");
           printer.text("- Note: ");
-          wrapText(item.specialInstructions, MAX_LINE_CHARS, false, 2).forEach((line) =>
-            printer.text(`  ${line}`)
+          wrapText(item.specialInstructions, MAX_LINE_CHARS - 2).forEach(
+            (line) => printer.text(`  ${line}`)
           );
         }
 
         if (index < items.length - 1) {
-          printer.text("------------------------------------------------");
+          printer.text("-".repeat(MAX_LINE_CHARS));
         }
       });
     }
 
     // 총액
-    log("Printing totals...");
-    printer.text("------------------------------------------------");
-    printer.align("LT");
-    printer.text("Subtotal:".padEnd(MAX_LINE_CHARS - PRICE_WIDTH, " ") + subtotal.toFixed(2).padStart(5, " "));
-    printer.text("GST (5%):".padEnd(MAX_LINE_CHARS - PRICE_WIDTH, " ") + gst.toFixed(2).padStart(5, " "));
-    printer.text("Tip:".padEnd(MAX_LINE_CHARS - PRICE_WIDTH, " ") + tip.toFixed(2).padStart(5, " "));
-    printer.size(1, 1);
-    printer.text("TOTAL:".padEnd(MAX_LINE_CHARS - PRICE_WIDTH, " ") + total.toFixed(2).padStart(5, " "));
-    printer.size(0, 0);
+    printer
+      .text("-".repeat(MAX_LINE_CHARS))
+      .align("RT")
+      .size(0, 0)
+      .text(`Subtotal: ${formatPrice(subtotal.toFixed(2))}`)
+      .text(`GST (5%): ${formatPrice(gst.toFixed(2))}`)
+      .text(`Tip: ${formatPrice(tip.toFixed(2))}`)
+      .size(1, 1)
+      .text(`TOTAL: ${formatPrice(total.toFixed(2))}`)
+      .size(0, 0);
 
     // 푸터
-    log("Printing footer...");
     printer
       .align("CT")
       .text("Thank you for your order!")
@@ -327,14 +384,14 @@ async function printOrder(order) {
       .feed(3);
 
     // 고객용 영수증 커팅 및 버퍼 플러시
-    log("Sending cut command for customer receipt...");
     printer.cut();
-
-    log("Flushing printer buffer for customer receipt...");
     await new Promise((resolve, reject) => {
       printer.flush((err) => {
         if (err) {
-          log("Failed to flush printer buffer for customer receipt: " + err.message);
+          log(
+            "Failed to flush printer buffer for customer receipt: " +
+              err.message
+          );
           reject(err);
         } else {
           log("Printer buffer flushed successfully for customer receipt");
@@ -344,16 +401,10 @@ async function printOrder(order) {
     });
 
     // 2. 주방용 영수증 출력 (메뉴 단위로)
-    log("Printing kitchen receipt...");
     if (items.length === 0) {
-      log("No items to print for kitchen receipt");
     } else {
       items.forEach((item, itemIndex) => {
-        log(`Printing kitchen receipt for item ${itemIndex + 1}...`);
-
-        // 프린터 초기화
-        log("Sending printer initialization command for kitchen receipt...");
-        printer.raw(Buffer.from([0x1B, 0x40])); // 프린터 초기화
+        printer.raw(Buffer.from([0x1b, 0x40])); // 프린터 초기화
 
         // 고객 정보 및 픽업 시간
         printer
@@ -362,48 +413,44 @@ async function printOrder(order) {
           .text(`${customerName}(${shortOrderNumber})`)
           .size(0, 0)
           .text(`PICKUP at ${pickupTimeShort}, ${pickupDateShort}`)
-          .text("------------------------------------------------");
+          .text("-".repeat(MAX_LINE_CHARS));
 
         // 아이템 이름 (중문 추출)
-        const itemName = `${item.quantity || 1} x ${extractChineseText(item.name || item.item_name || "Unknown")}`;
+        const itemName = `${item.quantity || 1} x ${extractChineseText(
+          item.name || item.item_name || "Unknown"
+        )}`;
         printer.size(1, 1);
-        wrapText(itemName, MAX_LINE_CHARS, false, 4).forEach((line) =>
+        wrapText(itemName, MAX_LINE_CHARS).forEach((line) =>
           printer.text(line)
         );
 
         // 옵션
         if (item.options && item.options.length > 0) {
-          log("Printing kitchen options...");
           item.options.forEach((option) => {
             option.choices.forEach((choice) => {
-              const optionText = `- ${extractChineseText(choice.name || "N/A")}`;
-              printer.size(1, 1);
-              wrapText(optionText, MAX_LINE_CHARS, true, 2).forEach((line) =>
-                printer.text(line)
-              );
-
+              let optionText = `- ${extractChineseText(choice.name || "N/A")}`;
               if (choice.subOptions && choice.subOptions.length > 0) {
                 choice.subOptions.forEach((subOption) => {
                   subOption.choices.forEach((subChoice) => {
-                    const subOptionText = ` - ${extractChineseText(subChoice.name || "N/A")}`;
-                    printer.size(1, 1);
-                    wrapText(subOptionText, MAX_LINE_CHARS, true, 3).forEach((line) =>
-                      printer.text(line)
-                    );
+                    optionText += ` (${extractChineseText(
+                      subChoice.name || "N/A"
+                    )})`;
                   });
                 });
               }
+              wrapText(optionText, MAX_LINE_CHARS).forEach((line) =>
+                printer.size(0, 0).text("\n").size(1, 1).text(line)
+              );
             });
           });
         }
 
         // 특이사항
         if (item.specialInstructions) {
-          log("Printing kitchen special instructions...");
           printer.size(1, 1);
           printer.text("- Note: ");
-          wrapText(item.specialInstructions, MAX_LINE_CHARS, false, 2).forEach((line) =>
-            printer.text(`  ${line}`)
+          wrapText(item.specialInstructions, MAX_LINE_CHARS - 2).forEach(
+            (line) => printer.text(`  ${line}`)
           );
         }
 
@@ -411,22 +458,12 @@ async function printOrder(order) {
         printer.size(0, 0).feed(2);
 
         // 커팅 및 버퍼 플러시
-        log(`Sending cut command for kitchen receipt item ${itemIndex + 1}...`);
         printer.cut();
-
-        log(`Flushing printer buffer for kitchen receipt item ${itemIndex + 1}...`);
-        printer.flush((err) => {
-          if (err) {
-            log(`Failed to flush printer buffer for kitchen receipt item ${itemIndex + 1}: ${err.message}`);
-          } else {
-            log(`Printer buffer flushed successfully for kitchen receipt item ${itemIndex + 1}`);
-          }
-        });
+        printer.flush();
       });
     }
 
     // print_status 업데이트
-    log("Updating print status...");
     try {
       await axios.post(
         `${API_URL}/update-print-status`,
@@ -435,52 +472,42 @@ async function printOrder(order) {
       );
       log(`Marked order #${order.id} as printed`);
     } catch (error) {
-      log(`Failed to update print status for order #${order.id}: ${error.message}`);
+      log(
+        `Failed to update print status for order #${order.id}: ${error.message}`
+      );
     }
 
     log(`Order #${orderNumber} printed successfully`);
   } catch (error) {
-    log(`Error printing order #${order.order_number || "N/A"}: ${error.message}`);
+    log(
+      `Error printing order #${order.order_number || "N/A"}: ${error.message}`
+    );
   }
 }
 
 // API 폴링
 async function pollOrders() {
   if (!JWT_TOKEN) {
-    log("No token available, please login first.");
     io.emit("relogin", "Session expired, please re-login.");
     return;
   }
 
   try {
-    log("Polling for new orders...");
     const response = await axios.get(`${API_URL}/pending-orders`, {
       headers: { Cookie: `jwt_token=${JWT_TOKEN}` },
     });
     const orders = response.data || [];
-    const time = new Date().toLocaleTimeString("en-US", {
-      timeZone: "America/Vancouver",
-    });
 
     if (orders.length > 0) {
-      log(`Found ${orders.length} new orders`);
       for (const order of orders) {
         if (!order.print_status && order.payment_status === "paid") {
-          log(`Order #${order.order_number || "N/A"} detected, printing...`);
           await printOrder(order);
-        } else {
-          log(`Order #${order.order_number || "N/A"} already printed or not paid`);
         }
       }
-    } else {
-      log(`${time}: No new orders found.`);
     }
   } catch (error) {
     const status = error.response?.status;
-    const errorMsg = error.response?.data?.message || error.message;
-    log(`Polling error: ${status || "Unknown"} - ${errorMsg}`);
     if (status === 401 || status === 403) {
-      log("Token expired or invalid, please re-login.");
       JWT_TOKEN = null;
       clearInterval(pollingInterval);
       pollingInterval = null;
@@ -509,30 +536,24 @@ app.post("/login", async (req, res) => {
     );
     JWT_TOKEN = response.data.token;
     await fs.writeFile(TOKEN_FILE, JWT_TOKEN);
-    log("Login successful");
     res.json({ status: "success", message: "Logged in" });
   } catch (error) {
-    const errorMsg = error.response?.data?.message || error.message;
-    log(`Login error: ${errorMsg}`);
     res.status(401).json({ status: "error", message: "Login failed" });
   }
 });
 
 app.get("/start", async (req, res) => {
   if (!JWT_TOKEN) {
-    log("Please login first");
     return res
       .status(401)
       .json({ status: "error", message: "Not authenticated" });
   }
   if (!pollingInterval) {
-    log("Starting server...");
     pollOrders();
     pollingInterval = setInterval(pollOrders, 3000);
     updateStatus("Running");
     res.json({ status: "started" });
   } else {
-    log("Server already running.");
     res.json({ status: "already_running" });
   }
 });
@@ -541,11 +562,9 @@ app.get("/stop", (req, res) => {
   if (pollingInterval) {
     clearInterval(pollingInterval);
     pollingInterval = null;
-    log("Server stopped.");
     updateStatus("Stopped");
     res.json({ status: "stopped" });
   } else {
-    log("Server not running.");
     res.json({ status: "not_running" });
   }
 });
@@ -561,58 +580,35 @@ async function init() {
         .catch(() => false)
     ) {
       JWT_TOKEN = await fs.readFile(TOKEN_FILE, "utf8");
-      log("Loaded saved token");
-    } else {
-      log("No saved token found, please login.");
     }
   } catch (error) {
-    log(`Error during initialization: ${error.message}`);
     process.exit(1);
   }
 }
 
 // WebSocket 연결
 io.on("connection", (socket) => {
-  log("Client connected to WebSocket");
-  socket.on("disconnect", () => log("Client disconnected"));
+  socket.on("disconnect", () => {});
 });
 
 // 서버 시작
 init().then(() => {
-  server.listen(PORT, () => {
-    log(`Server running on http://localhost:${PORT}`);
-    updateStatus(pollingInterval ? "Running" : "Stopped");
-  });
+  server.listen(PORT, () => {});
 });
 
 // 프로세스 종료 시 프린터 닫기
 process.on("SIGINT", async () => {
   if (pollingInterval) {
     clearInterval(pollingInterval);
-    log("Polling stopped.");
   }
   if (printer) {
-    log("Flushing printer buffer before closing...");
-    await new Promise((resolve, reject) => {
-      printer.flush((err) => {
-        if (err) {
-          log("Failed to flush printer buffer: " + err.message);
-          reject(err);
-        } else {
-          log("Printer buffer flushed successfully");
-          resolve();
-        }
-      });
-    });
-
-    log("Closing printer...");
     await new Promise((resolve) => {
-      printer.close(() => {
-        log("Printer closed");
-        resolve();
+      printer.flush(() => {
+        printer.close(() => {
+          resolve();
+        });
       });
     });
   }
-  log("Exiting process...");
   process.exit();
 });

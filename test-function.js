@@ -1,14 +1,52 @@
-const testItemName =
-  "Omelette with Shredded Ham / 鮮茄火腿蘑菇庵列 + 鮮茄火腿蘑菇庵列鮮茄火腿蘑菇庵列火腿絲通粉";
-const testPrice = "123.45";
-const testPrefix = "1 x ";
-const testOptionName = "Omelette with Shredded Ham / 鮮茄火腿蘑菇庵列 + 鮮茄火腿蘑菇庵列鮮茄火腿蘑菇庵列火腿絲通粉";
-const testOptionPrefix = "- ";
-const testOptionPrice = "10.00";
 const MAX_LINE_CHARS = 48;
+const sampleOrder = {
+  customer_name: "John Doe",
+  order_number: "KT-1052",
+  due_at: new Date().toISOString(),
+  created_at: new Date().toISOString(),
+  customer_phone: "778-123-4567",
+  customer_notes: "Please call when ready.",
+  subtotal: 50.5,
+  gst: 2.52,
+  tip: 5.00,
+  total: 58.02,
+  "cart": [
+    {
+      "id": "cart-item-001",
+      "name": "Omelette with Shredded Ham / 鮮茄火腿蘑菇庵列 + 鮮茄火腿蘑菇庵列鮮茄火腿蘑菇庵列火腿絲通粉",
+      "basePrice": 17.45,
+      "quantity": 1,
+      "subtotal": 17.45,
+      "options": [
+        {
+          "category": "Beverage Selection / 選擇飲料",
+          "choices": [
+            {
+              "name": "Milk Tea / 港式奶茶港式奶茶港式奶茶港式奶茶",
+              "extraPrice": 0,
+              "subOptions": [
+                {
+                  "category": "Temperature / 溫度",
+                  "choices": [
+                    {
+                      "name": "Hot / 熱",
+                      "extraPrice": 0
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "specialInstructions": ""
+    },
+  ]
+};
+
 
 function formatPrice(price) {
-  const priceStr = price.toString();
+  const priceStr = Number(price).toFixed(2);
   const priceLength = priceStr.length;
   const padding = Math.max(1, 7 - priceLength);
   const formatted = " ".repeat(padding) + priceStr;
@@ -78,5 +116,15 @@ function wrapTextWithPrice(text, prefix, price) {
   return lines;
 }
 
-wrapTextWithPrice(testItemName, testPrefix, testPrice);
-wrapTextWithPrice(testOptionName, testOptionPrefix, testOptionPrice);
+const testItemName = sampleOrder.cart[0].name;
+const testItemPrefix = `${sampleOrder.cart[0].quantity} x `;
+const testItemPrice = sampleOrder.cart[0].basePrice;
+let mergedName = "";
+mergedName += sampleOrder.cart[0].options[0].choices[0].name;
+mergedName += `(${sampleOrder.cart[0].options[0].choices[0].subOptions[0].choices[0].name})`;
+const testOptionName = mergedName;
+const testOptionPrefix = `- `;
+const testOptionPrice = sampleOrder.cart[0].options[0].choices[0].extraPrice;
+
+wrapTextWithPrice(testItemName, testItemPrefix, testItemPrice);
+wrapTextWithPrice(testOptionName, testOptionPrefix, testOptionPrice, true);

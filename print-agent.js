@@ -79,86 +79,79 @@ function calculateTextLength(text) {
 
 // 가격 포맷팅 함수
 function formatPrice(price) {
-  const priceStr = price.toString();
+  const priceStr = Number(price).toFixed(2);
   const priceLength = priceStr.length;
-  let padding;
-  if (priceLength === 4) padding = 4; // "0.00" → "    0.00"
-  else if (priceLength === 5) padding = 3; // "17.45" → "   17.45"
-  else padding = 2; // "123.45" → "  123.45"
+  const padding = Math.max(1, 7 - priceLength);
   const formatted = " ".repeat(padding) + priceStr;
   log(`Formatted Price: "${priceStr}" → "${formatted}"`);
   return formatted;
 }
 
-// wrapTextWithPrice 함수 (여백 조정)
+// wrapTextWithPrice 함수 (첫째 줄에만 가격 출력하도록 수정)
 function wrapTextWithPrice(text, prefix, price) {
   const lines = [];
   const priceText = formatPrice(price);
   const priceLength = priceText.length;
-  const prefixLength = calculateTextLength(prefix);
+  const prefixLength = prefix.length; // 테스트 코드처럼 실제 문자열 길이 사용
 
-  // 첫째 줄 가능 길이 계산 (여백 2칸 포함)
-  const firstLineAvailableWidth =
-    MAX_LINE_CHARS - prefixLength - priceLength - 2;
-  // 이후 줄 가능 길이 (여백 2칸 포함)
-  const subsequentLineAvailableWidth = MAX_LINE_CHARS - priceLength - 2;
+  const firstLineAvailableWidth = MAX_LINE_CHARS - prefixLength - priceLength;
+  const subsequentLineAvailableWidth = MAX_LINE_CHARS - priceLength; // 이후 줄은 가격 출력 안 함
 
   let currentLine = "";
   let currentLineLength = 0;
   let isFirstLine = true;
 
-  for (const char of text) {
+  const chars = [...text]; // 문자 단위로 자르기
+
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i];
     const charLength = /[\u4E00-\u9FFF]/.test(char) ? 2 : 1;
-    const availableWidth = isFirstLine
-      ? firstLineAvailableWidth
-      : subsequentLineAvailableWidth;
+    const availableWidth = isFirstLine ? firstLineAvailableWidth : subsequentLineAvailableWidth;
 
     if (currentLineLength + charLength <= availableWidth) {
+      // 현재 줄에 추가 가능
       currentLine += char;
       currentLineLength += charLength;
     } else {
-      if (currentLine) {
-        // 실제 출력 줄 구성: prefix + 텍스트 + 여백(1~2칸) + 가격
-        const actualLine = isFirstLine ? prefix + currentLine : currentLine;
-        const actualLineLength = calculateTextLength(actualLine);
-        const remainingSpace = MAX_LINE_CHARS - actualLineLength - priceLength;
-        const spaces = " ".repeat(Math.max(1, Math.min(2, remainingSpace))); // 1~2칸 여백
-        const line = actualLine + spaces + priceText;
-        lines.push(line);
-        log(
-          `WrapTextWithPrice - ${
-            isFirstLine ? "Line 1" : "Wrapped Line"
-          }: "${line}"`
-        );
-        log(
-          `Actual Line Length: ${actualLineLength}, Spaces: ${spaces.length}, Price Length: ${priceLength}`
-        );
-
+      // 줄이 꽉 찼으니 줄바꿈
+      let line;
+      const actualLine = isFirstLine ? prefix + currentLine : currentLine;
+      const actualLineLength = calculateTextLength(actualLine);
+      let spaces;
+      if (isFirstLine) {
+        spaces = " ".repeat(MAX_LINE_CHARS - (prefixLength + currentLineLength + priceLength));
+        line = prefix + currentLine + spaces + priceText;
         isFirstLine = false;
-        currentLine = char;
-        currentLineLength = charLength;
       } else {
-        currentLine = char;
-        currentLineLength = charLength;
+        spaces = " ".repeat(MAX_LINE_CHARS - currentLineLength);
+        line = currentLine + spaces; // 이후 줄에는 가격 출력 안 함
       }
+      lines.push(line);
+      log(`WrapTextWithPrice - ${isFirstLine ? "Line 1" : "Wrapped Line"}: "${line}"`);
+      log(`Actual Line Length: ${actualLineLength}, Spaces: ${spaces.length}${isFirstLine ? "" : ", Price: Not Displayed"}`);
+
+      // 줄 초기화
+      currentLine = char;
+      currentLineLength = charLength;
     }
   }
 
+  // 마지막 남은 글자 처리
   if (currentLine) {
+    let line;
     const actualLine = isFirstLine ? prefix + currentLine : currentLine;
     const actualLineLength = calculateTextLength(actualLine);
-    const remainingSpace = MAX_LINE_CHARS - actualLineLength - priceLength;
-    const spaces = " ".repeat(Math.max(1, Math.min(2, remainingSpace))); // 1~2칸 여백
-    const line = actualLine + spaces + priceText;
+    let spaces;
+    if (isFirstLine) {
+      spaces = " ".repeat(MAX_LINE_CHARS - (prefixLength + currentLineLength + priceLength));
+      line = prefix + currentLine + spaces + priceText;
+    } else {
+      spaces = " ".repeat(MAX_LINE_CHARS - currentLineLength);
+      line = currentLine + spaces; // 이후 줄에는 가격 출력 안 함
+    }
     lines.push(line);
-    log(
-      `WrapTextWithPrice - ${
-        isFirstLine ? "Line 1" : "Wrapped Line"
-      }: "${line}"`
-    );
-    log(
-      `Actual Line Length: ${actualLineLength}, Spaces: ${spaces.length}, Price Length: ${priceLength}`
-    );
+    log(`WrapTextWithPrice - ${isFirstLine ? "Line 1" : "Wrapped Line"}: "${line}"`);
+    log(`Actual Line Length: ${actualLineLength}, Spaces: ${spaces.length}${isFirstLine ? "" : ", Price: Not Displayed"}`);
   }
 
   return lines;
@@ -210,9 +203,7 @@ async function printOrder(order) {
       try {
         cart = JSON.parse(order.cart);
       } catch (e) {
-        log(
-          `Error parsing cart for order #${order.order_number}: ${e.message}`
-        );
+        log(`Error parsing cart for order #${order.order_number}: ${e.message}`);
         return;
       }
     }
@@ -264,7 +255,7 @@ async function printOrder(order) {
     const total = Number(order.total || 0);
 
     // 1. 고객용 영수증 출력
-    printer.raw(Buffer.from([0x1b, 0x40])); // 프린터 초기화
+    printer.raw(Buffer.from([0x1B, 0x40])); // 프린터 초기화
 
     // 고객 정보
     printer
@@ -292,20 +283,12 @@ async function printOrder(order) {
     } else {
       items.forEach((item, index) => {
         const itemSubtotal = Number(
-          item.subtotal ||
-            (item.basePrice || item.price) * (item.quantity || 1) ||
-            0
+          item.subtotal || (item.basePrice || item.price) * (item.quantity || 1) || 0
         ).toFixed(2);
-        const itemName = `${item.quantity || 1} x ${
-          item.name || item.item_name || "Unknown"
-        }`;
+        const itemName = `${item.quantity || 1} x ${item.name || item.item_name || "Unknown"}`;
         const prefix = `${item.quantity || 1} x `;
 
-        const lines = wrapTextWithPrice(
-          itemName.slice(prefix.length),
-          prefix,
-          itemSubtotal
-        );
+        const lines = wrapTextWithPrice(itemName.slice(prefix.length), prefix, itemSubtotal);
         lines.forEach((line) => printer.text(line));
 
         // 옵션 출력
@@ -314,20 +297,14 @@ async function printOrder(order) {
             option.choices.forEach((choice) => {
               let optionText = `${choice.name || "N/A"}`;
               let totalPrice = Number(
-                choice.extraPrice ||
-                  choice.additional_price ||
-                  choice.price ||
-                  0
+                choice.extraPrice || choice.additional_price || choice.price || 0
               );
 
               if (choice.subOptions && choice.subOptions.length > 0) {
                 choice.subOptions.forEach((subOption) => {
                   subOption.choices.forEach((subChoice) => {
                     const subPrice = Number(
-                      subChoice.extraPrice ||
-                        subChoice.additional_price ||
-                        subChoice.price ||
-                        0
+                      subChoice.extraPrice || subChoice.additional_price || subChoice.price || 0
                     );
                     totalPrice = Number(totalPrice) + Number(subPrice);
                     optionText += ` (${subChoice.name || "N/A"})`;
@@ -337,11 +314,7 @@ async function printOrder(order) {
 
               totalPrice = totalPrice.toFixed(2);
               const optionPrefix = "- ";
-              const optionLines = wrapTextWithPrice(
-                optionText,
-                optionPrefix,
-                totalPrice
-              );
+              const optionLines = wrapTextWithPrice(optionText, optionPrefix, totalPrice);
               optionLines.forEach((line) => printer.text(line));
             });
           });
@@ -350,8 +323,8 @@ async function printOrder(order) {
         // 특이사항
         if (item.specialInstructions) {
           printer.text("- Note: ");
-          wrapText(item.specialInstructions, MAX_LINE_CHARS - 2).forEach(
-            (line) => printer.text(`  ${line}`)
+          wrapText(item.specialInstructions, MAX_LINE_CHARS - 2).forEach((line) =>
+            printer.text(`  ${line}`)
           );
         }
 
@@ -388,10 +361,7 @@ async function printOrder(order) {
     await new Promise((resolve, reject) => {
       printer.flush((err) => {
         if (err) {
-          log(
-            "Failed to flush printer buffer for customer receipt: " +
-              err.message
-          );
+          log("Failed to flush printer buffer for customer receipt: " + err.message);
           reject(err);
         } else {
           log("Printer buffer flushed successfully for customer receipt");
@@ -404,7 +374,7 @@ async function printOrder(order) {
     if (items.length === 0) {
     } else {
       items.forEach((item, itemIndex) => {
-        printer.raw(Buffer.from([0x1b, 0x40])); // 프린터 초기화
+        printer.raw(Buffer.from([0x1B, 0x40])); // 프린터 초기화
 
         // 고객 정보 및 픽업 시간
         printer
@@ -416,13 +386,9 @@ async function printOrder(order) {
           .text("-".repeat(MAX_LINE_CHARS));
 
         // 아이템 이름 (중문 추출)
-        const itemName = `${item.quantity || 1} x ${extractChineseText(
-          item.name || item.item_name || "Unknown"
-        )}`;
+        const itemName = `${item.quantity || 1} x ${extractChineseText(item.name || item.item_name || "Unknown")}`;
         printer.size(1, 1);
-        wrapText(itemName, MAX_LINE_CHARS).forEach((line) =>
-          printer.text(line)
-        );
+        wrapText(itemName, MAX_LINE_CHARS).forEach((line) => printer.text(line));
 
         // 옵션
         if (item.options && item.options.length > 0) {
@@ -432,9 +398,7 @@ async function printOrder(order) {
               if (choice.subOptions && choice.subOptions.length > 0) {
                 choice.subOptions.forEach((subOption) => {
                   subOption.choices.forEach((subChoice) => {
-                    optionText += ` (${extractChineseText(
-                      subChoice.name || "N/A"
-                    )})`;
+                    optionText += ` (${extractChineseText(subChoice.name || "N/A")})`;
                   });
                 });
               }
@@ -449,8 +413,8 @@ async function printOrder(order) {
         if (item.specialInstructions) {
           printer.size(1, 1);
           printer.text("- Note: ");
-          wrapText(item.specialInstructions, MAX_LINE_CHARS - 2).forEach(
-            (line) => printer.text(`  ${line}`)
+          wrapText(item.specialInstructions, MAX_LINE_CHARS - 2).forEach((line) =>
+            printer.text(`  ${line}`)
           );
         }
 
@@ -472,16 +436,12 @@ async function printOrder(order) {
       );
       log(`Marked order #${order.id} as printed`);
     } catch (error) {
-      log(
-        `Failed to update print status for order #${order.id}: ${error.message}`
-      );
+      log(`Failed to update print status for order #${order.id}: ${error.message}`);
     }
 
     log(`Order #${orderNumber} printed successfully`);
   } catch (error) {
-    log(
-      `Error printing order #${order.order_number || "N/A"}: ${error.message}`
-    );
+    log(`Error printing order #${order.order_number || "N/A"}: ${error.message}`);
   }
 }
 

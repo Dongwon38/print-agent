@@ -3,6 +3,9 @@
 // 영수증 2개(고객용 + 가게용) + 주방용 영수증 출력
 // 레이아웃 개선
 //
+// NOC 업데이트 할 일:
+// NOC 연결 방식으로 수정 후, 여러 건 동시 접수 테스트
+// 백그라운드에서 항상 실행되도록 설정
 
 const express = require("express");
 const http = require("http");

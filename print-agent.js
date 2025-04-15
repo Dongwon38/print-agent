@@ -95,7 +95,7 @@ function wrapTextWithPrice(text, prefix, price) {
   const prefixLength = prefix.length; // 테스트 코드처럼 실제 문자열 길이 사용
 
   const firstLineAvailableWidth = MAX_LINE_CHARS - prefixLength - priceLength;
-  const subsequentLineAvailableWidth = MAX_LINE_CHARS - priceLength; // 이후 줄은 가격 출력 안 함
+  const subsequentLineAvailableWidth = MAX_LINE_CHARS - priceLength; // 수정: 이후 줄은 가격 출력을 하지 않지만, 항상 가격 공간은 공백으로 남김(오른쪽을 깨끗하게 정렬하기 위해)
 
   let currentLine = "";
   let currentLineLength = 0;

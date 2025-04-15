@@ -1,3 +1,11 @@
+// 테스트 완료 25-04-15
+// 연결방식 업데이트
+// 영수증 2개(고객용 + 가게용) + 주방용 영수증 출력
+// 레이아웃 개선
+//
+// KTR 할 일
+//
+
 const express = require("express");
 const http = require("http");
 const socketIo = require("socket.io");

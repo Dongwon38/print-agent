@@ -15,21 +15,21 @@ const io = socketIo(server);
 const devices = escpos.USB.findPrinter();
 if (devices.length === 0) {
   console.log("No USB printer found");
-  process.exit();
+  process.exit(1);
 }
 
 const device = new escpos.USB(
   devices[0].deviceDescriptor.idVendor,
   devices[0].deviceDescriptor.idProduct
 );
-const options = { encoding: "GB18030" }; // Big5에서 GB18030으로 변경
+const options = { encoding: "GB18030" };
 let printer = null;
 
 const API_URL = process.env.API_URL;
 const PORT = process.env.PORT || 3000;
 const TOKEN_FILE = "./jwt_token.txt";
-const GSTNumber = "872046354";
-const MAX_LINE_CHARS = 48; // 최대 길이를 48자로 변경
+const GSTNumber = "TESTNUMBER";
+const MAX_LINE_CHARS = 48;
 
 let JWT_TOKEN = null;
 let pollingInterval = null;
@@ -42,7 +42,7 @@ async function initializePrinter() {
         reject(error);
       } else {
         printer = new escpos.Printer(device, options);
-        log("Printer initialized successfully");
+        log("Printer connected successfully");
         resolve();
       }
     });
@@ -135,17 +135,13 @@ function extractChineseText(text) {
 // 동적 데이터로 영수증 출력
 async function printOrder(order) {
   try {
-    log("Received order data: " + JSON.stringify(order, null, 2));
-
     // order.cart 파싱
     let cart = [];
     if (order.cart) {
       try {
         cart = JSON.parse(order.cart);
       } catch (e) {
-        log(
-          `Error parsing cart for order #${order.order_number}: ${e.message}`
-        );
+        log(`Failed to parse cart for order #${order.order_number}: ${e.message}`);
         return;
       }
     }
@@ -197,14 +193,9 @@ async function printOrder(order) {
     const total = Number(order.total || 0);
 
     // 1. 고객용 영수증 출력
-    log("Printing customer receipt...");
-
-    // 프린터 초기화 명령
-    log("Sending printer initialization command for customer receipt...");
     printer.raw(Buffer.from([0x1b, 0x40])); // 프린터 초기화
 
     // 고객 정보
-    log("Printing customer info...");
     printer
       .font("a")
       .align("LT")
@@ -217,7 +208,6 @@ async function printOrder(order) {
       .text(`Phone: ${phone}`);
 
     if (order.customer_notes) {
-      log("Printing customer notes...");
       printer.text("Customer Notes:");
       wrapText(order.customer_notes, MAX_LINE_CHARS).forEach((line) =>
         printer.text(`  ${line}`)
@@ -227,10 +217,8 @@ async function printOrder(order) {
 
     // 아이템 목록
     if (items.length === 0) {
-      log("No items in this order");
       printer.text("No items in this order.");
     } else {
-      log("Printing items...");
       items.forEach((item, index) => {
         const itemSubtotal = Number(
           item.subtotal ||
@@ -245,7 +233,6 @@ async function printOrder(order) {
         const itemNameLength =
           (item.name || item.item_name || "Unknown").length + 3;
         if (itemNameLength > 43) {
-          // 48 - 5 (가격 길이)
           const lines = wrapTextWithPrice(itemName, MAX_LINE_CHARS, priceText);
           lines.forEach((line) => printer.text(line));
         } else {
@@ -256,7 +243,6 @@ async function printOrder(order) {
 
         // 옵션 출력
         if (item.options && item.options.length > 0) {
-          log("Printing options...");
           item.options.forEach((option) => {
             option.choices.forEach((choice) => {
               let optionText = `- ${choice.name || "N/A"}`;
@@ -287,7 +273,6 @@ async function printOrder(order) {
               const priceTextOption = totalPrice.padStart(4, " ");
               const optionNameLength = (optionText || "N/A").length + 3;
               if (optionNameLength > 44) {
-                // 48 - 4 (가격 길이)
                 const optionLines = wrapTextWithPrice(
                   optionText,
                   MAX_LINE_CHARS,
@@ -305,7 +290,6 @@ async function printOrder(order) {
 
         // 특이사항
         if (item.specialInstructions) {
-          log("Printing special instructions...");
           printer.text("- Note: ");
           wrapText(item.specialInstructions, MAX_LINE_CHARS).forEach((line) =>
             printer.text(`  ${line}`)
@@ -319,7 +303,6 @@ async function printOrder(order) {
     }
 
     // 총액
-    log("Printing totals...");
     printer
       .text("------------------------------------------------")
       .align("RT")
@@ -332,46 +315,33 @@ async function printOrder(order) {
       .size(0, 0);
 
     // 푸터
-    log("Printing footer...");
     printer
       .align("CT")
       .text("Thank you for your order!")
-      .text("Night Owl Cafe")
-      .text("#104-8580 Cambie Rd, Richmond, BC")
-      .text("(604) 276-0576")
+      .text("Kamtou Seafood Restaurant")
+      .text("3779 Sexsmith Rd Unit 1298, Richmond, BC V6X 3Z9")
+      .text("(604) 285-1668")
       .text(`GST Number: ${GSTNumber}`)
       .feed(3);
 
     // 고객용 영수증 커팅 및 버퍼 플러시
-    log("Sending cut command for customer receipt...");
     printer.cut();
-
-    log("Flushing printer buffer for customer receipt...");
     await new Promise((resolve, reject) => {
       printer.flush((err) => {
         if (err) {
-          log(
-            "Failed to flush printer buffer for customer receipt: " +
-              err.message
-          );
+          log(`Failed to print customer receipt: ${err.message}`);
           reject(err);
         } else {
-          log("Printer buffer flushed successfully for customer receipt");
           resolve();
         }
       });
     });
 
     // 2. 주방용 영수증 출력 (메뉴 단위로)
-    log("Printing kitchen receipt...");
     if (items.length === 0) {
       log("No items to print for kitchen receipt");
     } else {
-      items.forEach((item, itemIndex) => {
-        log(`Printing kitchen receipt for item ${itemIndex + 1}...`);
-
-        // 프린터 초기화
-        log("Sending printer initialization command for kitchen receipt...");
+      for (const [itemIndex, item] of items.entries()) {
         printer.raw(Buffer.from([0x1b, 0x40])); // 프린터 초기화
 
         // 고객 정보 및 픽업 시간
@@ -394,7 +364,6 @@ async function printOrder(order) {
 
         // 옵션
         if (item.options && item.options.length > 0) {
-          log("Printing kitchen options...");
           item.options.forEach((option) => {
             option.choices.forEach((choice) => {
               let optionText = `- ${extractChineseText(choice.name || "N/A")}`;
@@ -416,7 +385,6 @@ async function printOrder(order) {
 
         // 특이사항
         if (item.specialInstructions) {
-          log("Printing kitchen special instructions...");
           printer.size(1, 1);
           printer.text("- Note: ");
           wrapText(item.specialInstructions, MAX_LINE_CHARS).forEach((line) =>
@@ -428,63 +396,47 @@ async function printOrder(order) {
         printer.size(0, 0).feed(2);
 
         // 커팅 및 버퍼 플러시
-        log(`Sending cut command for kitchen receipt item ${itemIndex + 1}...`);
         printer.cut();
-
-        log(
-          `Flushing printer buffer for kitchen receipt item ${itemIndex + 1}...`
-        );
-        printer.flush((err) => {
-          if (err) {
-            log(
-              `Failed to flush printer buffer for kitchen receipt item ${
-                itemIndex + 1
-              }: ${err.message}`
-            );
-          } else {
-            log(
-              `Printer buffer flushed successfully for kitchen receipt item ${
-                itemIndex + 1
-              }`
-            );
-          }
+        await new Promise((resolve, reject) => {
+          printer.flush((err) => {
+            if (err) {
+              log(`Failed to print kitchen receipt item ${itemIndex + 1}: ${err.message}`);
+              reject(err);
+            } else {
+              resolve();
+            }
+          });
         });
-      });
+      }
     }
 
     // print_status 업데이트
-    log("Updating print status...");
     try {
       await axios.post(
         `${API_URL}/update-print-status`,
         { order_id: order.id, print_status: "printed" },
         { headers: { Cookie: `jwt_token=${JWT_TOKEN}` } }
       );
-      log(`Marked order #${order.id} as printed`);
     } catch (error) {
-      log(
-        `Failed to update print status for order #${order.id}: ${error.message}`
-      );
+      log(`Failed to update print status for order #${order.id}: ${error.message}`);
+      return; // 에러 발생 시 더 이상 진행하지 않음
     }
 
     log(`Order #${orderNumber} printed successfully`);
   } catch (error) {
-    log(
-      `Error printing order #${order.order_number || "N/A"}: ${error.message}`
-    );
+    log(`Error printing order #${order.order_number || "N/A"}: ${error.message}`);
   }
 }
 
 // API 폴링
 async function pollOrders() {
   if (!JWT_TOKEN) {
-    log("No token available, please login first.");
-    io.emit("relogin", "Session expired, please re-login.");
+    log("No token available, please login");
+    io.emit("relogin", "Session expired, please re-login");
     return;
   }
 
   try {
-    log("Polling for new orders...");
     const response = await axios.get(`${API_URL}/pending-orders`, {
       headers: { Cookie: `jwt_token=${JWT_TOKEN}` },
     });
@@ -497,28 +449,24 @@ async function pollOrders() {
       log(`Found ${orders.length} new orders`);
       for (const order of orders) {
         if (!order.print_status && order.payment_status === "paid") {
-          log(`Order #${order.order_number || "N/A"} detected, printing...`);
+          log(`Printing order #${order.order_number || "N/A"}`);
           await printOrder(order);
-        } else {
-          log(
-            `Order #${order.order_number || "N/A"} already printed or not paid`
-          );
         }
       }
     } else {
-      log(`${time}: No new orders found.`);
+      log(`${time}: No new orders`);
     }
   } catch (error) {
     const status = error.response?.status;
     const errorMsg = error.response?.data?.message || error.message;
-    log(`Polling error: ${status || "Unknown"} - ${errorMsg}`);
+    log(`Failed to fetch orders: ${status || "Unknown"} - ${errorMsg}`);
     if (status === 401 || status === 403) {
-      log("Token expired or invalid, please re-login.");
+      log("Token expired, please re-login");
       JWT_TOKEN = null;
       clearInterval(pollingInterval);
       pollingInterval = null;
       updateStatus("Stopped");
-      io.emit("relogin", "Session expired, please re-login.");
+      io.emit("relogin", "Session expired, please re-login");
     }
     io.emit("error", "Failed to fetch orders");
   }
@@ -546,7 +494,7 @@ app.post("/login", async (req, res) => {
     res.json({ status: "success", message: "Logged in" });
   } catch (error) {
     const errorMsg = error.response?.data?.message || error.message;
-    log(`Login error: ${errorMsg}`);
+    log(`Login failed: ${errorMsg}`);
     res.status(401).json({ status: "error", message: "Login failed" });
   }
 });
@@ -559,13 +507,13 @@ app.get("/start", async (req, res) => {
       .json({ status: "error", message: "Not authenticated" });
   }
   if (!pollingInterval) {
-    log("Starting server...");
+    log("Starting server");
     pollOrders();
     pollingInterval = setInterval(pollOrders, 3000);
     updateStatus("Running");
     res.json({ status: "started" });
   } else {
-    log("Server already running.");
+    log("Server already running");
     res.json({ status: "already_running" });
   }
 });
@@ -574,11 +522,11 @@ app.get("/stop", (req, res) => {
   if (pollingInterval) {
     clearInterval(pollingInterval);
     pollingInterval = null;
-    log("Server stopped.");
+    log("Server stopped");
     updateStatus("Stopped");
     res.json({ status: "stopped" });
   } else {
-    log("Server not running.");
+    log("Server not running");
     res.json({ status: "not_running" });
   }
 });
@@ -596,24 +544,24 @@ async function init() {
       JWT_TOKEN = await fs.readFile(TOKEN_FILE, "utf8");
       log("Loaded saved token");
     } else {
-      log("No saved token found, please login.");
+      log("No saved token found, please login");
     }
   } catch (error) {
-    log(`Error during initialization: ${error.message}`);
+    log(`Failed to initialize printer: ${error.message}`);
     process.exit(1);
   }
 }
 
 // WebSocket 연결
 io.on("connection", (socket) => {
-  log("Client connected to WebSocket");
+  log("Client connected");
   socket.on("disconnect", () => log("Client disconnected"));
 });
 
 // 서버 시작
 init().then(() => {
   server.listen(PORT, () => {
-    log(`Server running on http://localhost:${PORT}`);
+    log(`Server running on port ${PORT}`);
     updateStatus(pollingInterval ? "Running" : "Stopped");
   });
 });
@@ -622,23 +570,19 @@ init().then(() => {
 process.on("SIGINT", async () => {
   if (pollingInterval) {
     clearInterval(pollingInterval);
-    log("Polling stopped.");
+    log("Polling stopped");
   }
   if (printer) {
-    log("Flushing printer buffer before closing...");
     await new Promise((resolve, reject) => {
       printer.flush((err) => {
         if (err) {
-          log("Failed to flush printer buffer: " + err.message);
+          log(`Failed to flush printer buffer: ${err.message}`);
           reject(err);
         } else {
-          log("Printer buffer flushed successfully");
           resolve();
         }
       });
     });
-
-    log("Closing printer...");
     await new Promise((resolve) => {
       printer.close(() => {
         log("Printer closed");
@@ -646,6 +590,6 @@ process.on("SIGINT", async () => {
       });
     });
   }
-  log("Exiting process...");
+  log("Server shutdown complete");
   process.exit();
 });

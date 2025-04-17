@@ -17,6 +17,7 @@
     "escpos-network": "^3.0.0-alpha.5",
     "escpos-usb": "^3.0.0-alpha.2",
     "express": "^4.21.2",
+    "keytar": "^7.9.0",
     "node-printer": "^1.0.4",
     "socket.io": "^4.8.1",
     "usb": "^1.9.2"

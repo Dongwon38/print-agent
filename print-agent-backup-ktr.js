@@ -55,7 +55,7 @@ let printer = null;
 const API_URL = process.env.KTR_API_URL;
 const PORT = process.env.PORT || 3000;
 const TOKEN_FILE = "./jwt_token.txt";
-const GSTNumber = "TESTNUMBER";
+const GSTNumber = "792992869";
 const MAX_LINE_CHARS = 48;
 
 let JWT_TOKEN = null;

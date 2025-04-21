@@ -1,6 +1,7 @@
 // 250417, 로그인 테스트까지 끝난 버전, NOC에 직접 가서 테스트 해야 하는 버전
 // node print-agent.js USERNAME PASSWORD, 백엔드에서 설정한 로그인 유효기간 = 30 days
-
+// 250421 NOC에 설치해야 하는 버전
+// 토큰 암호화 및 복호화, 윈도우 자격 증명 저장 및 읽기, 프린터 초기화 및 영수증 출력 기능 포함
 
 const express = require("express");
 const http = require("http");
@@ -15,10 +16,16 @@ const app = express();
 const server = http.createServer(app);
 
 const API_URL = process.env.NOC_API_URL;
-const PORT = process.env.PORT || 3000;
-const GSTNumber = "872046354";
-const MAX_LINE_CHARS = 48;
-const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || "your-secret-key";
+const PORT = parseInt(process.env.PORT, 10);
+const GSTNumber = process.env.GST_NUMBER;
+const MAX_LINE_CHARS = parseInt(process.env.MAX_LINE_CHARS, 10);
+const ENCRYPTION_SECRET = process.env.PRINTER_ENCRYPTION_SECRET;
+
+// 필수 환경 변수 검사
+if (!API_URL || !PORT || !GSTNumber || !MAX_LINE_CHARS || !ENCRYPTION_SECRET) {
+  log("Missing required environment variables (NOC_API_URL, PORT, GST_NUMBER, MAX_LINE_CHARS, PRINTER_ENCRYPTION_SECRET)");
+  process.exit(1);
+}
 
 let encryptedJwtToken = null;
 let pollingInterval = null;
@@ -31,13 +38,13 @@ serialPort.on("error", (err) => {
   log(`Serial port error: ${err.message}`);
 });
 
-// 로그 파일로 출력
+// 로그 파일로 출력 개선
 function log(message) {
   const timestamp = new Date().toLocaleTimeString("en-US", { timeZone: "America/Vancouver" });
   const logMessage = `[${timestamp}] ${message}\n`;
   console.log(logMessage);
   require("fs").appendFile("server.log", logMessage, (err) => {
-    if (err) console.error(`Failed to write log: ${err.message}`);
+    if (err) console.error(`Failed to write log: ${err.message || err}`);
   });
 }
 
@@ -71,11 +78,11 @@ async function getCredentials() {
   return JSON.parse(creds);
 }
 
-// 자동 로그인 및 토큰 갱신
-async function autoLogin() {
+// 자동 로그인 및 토큰 갱신 함수 개선
+async function autoLogin(attempt = 1, maxAttempts = 3) {
   const { username, password } = await getCredentials();
   try {
-    log("Attempting auto-login...");
+    log(`Attempting auto-login (attempt ${attempt}/${maxAttempts})...`);
     const response = await axios.post(
       `${API_URL}/login`,
       { username, password },
@@ -84,9 +91,17 @@ async function autoLogin() {
     const token = response.data.token;
     encryptedJwtToken = encryptToken(token);
     log("Auto-login successful");
+    return true;
   } catch (error) {
-    log(`Auto-login failed: ${error.response?.data?.message || error.message}`);
-    process.exit(1);
+    const errorMsg = error.response?.data?.message || error.message;
+    log(`Auto-login failed: ${errorMsg}`);
+    if (attempt < maxAttempts) {
+      log(`Retrying auto-login in 5 seconds...`);
+      await new Promise((resolve) => setTimeout(resolve, 10000));
+      return autoLogin(attempt + 1, maxAttempts);
+    }
+    log(`Max login attempts (${maxAttempts}) reached`);
+    return false;
   }
 }
 
@@ -424,8 +439,9 @@ async function printKitchenReceipt(order) {
   }
 }
 
-// 동적 데이터로 영수증 출력
+// 동적 데이터로 영수증 출력 수정 (시리얼 포트 종료 중복 방지)
 async function printOrder(order) {
+  let portClosed = false;
   try {
     let cart = [];
     if (order.cart) {
@@ -475,8 +491,8 @@ async function printOrder(order) {
   } catch (error) {
     log(`Error printing order #${order.order_number || "N/A"}: ${error.message}`);
   } finally {
-    if (serialPort.isOpen) {
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+    if (serialPort.isOpen && !portClosed) {
+      await new Promise((resolve) => setTimeout(resolve, 10000));
       try {
         printer.close();
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -487,6 +503,7 @@ async function printOrder(order) {
           });
         });
         log("Serial port closed successfully");
+        portClosed = true;
       } catch (error) {
         log(`Error closing serial port: ${error.message}`);
       }
@@ -494,11 +511,14 @@ async function printOrder(order) {
   }
 }
 
-// API 폴링
+// API 폴링 함수 수정 (이전 요청 반영)
 async function pollOrders() {
   if (!encryptedJwtToken) {
-    await autoLogin();
-    if (!encryptedJwtToken) return;
+    const loginSuccess = await autoLogin();
+    if (!loginSuccess) {
+      log("Failed to login after max attempts, exiting...");
+      process.exit(1);
+    }
   }
 
   try {
@@ -527,13 +547,16 @@ async function pollOrders() {
     if (status === 401 || status === 403) {
       log("Token expired, attempting re-login...");
       encryptedJwtToken = null;
-      await autoLogin();
-      if (encryptedJwtToken) {
+      const loginSuccess = await autoLogin();
+      if (loginSuccess) {
         log("Re-login successful, resuming polling");
+        await pollOrders();
       } else {
-        log("Re-login failed, exiting...");
+        log("Re-login failed after max attempts, exiting...");
         process.exit(1);
       }
+    } else {
+      log("Non-authentication error, continuing polling...");
     }
   }
 }
@@ -563,7 +586,7 @@ async function init() {
 init().then(() => {
   log(`Starting server on port ${PORT}`);
   pollOrders();
-  pollingInterval = setInterval(pollOrders, 3000);
+  pollingInterval = setInterval(pollOrders, 10000);
   server.listen(PORT, () => {
     log(`Server running on port ${PORT}`);
   });

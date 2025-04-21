@@ -1,0 +1,31 @@
+###레스토랑 설치 시나리오 - 윈도우 (v. 250421)
+1 설치 파일 다운로드: 깃헙/메일/USB로 다운로드(코드, zadig, nodejs)
+2 프린터 하드웨어 연결: ⁠zadig 설치, 프린터 usb 연결, zadig로 프린터 찾아서 lib-win32 설치
+3 NodeJS 설치, 패키지 설치(npm install)
+4 터미널 관리자 실행, 서버 실행
+5 재부팅 후 자동 서버 시작 등록
+$ npm install -g pm2, pm2 -v
+$ cd 경로/프린트서버/디렉토리
+$ pm2 start printer-server.js --restart-delay=60000
+$ pm2 save
+$ pm2 startup windows
+- 아래 내용을 "관리자 권한"으로 실행된 CMD 또는 PowerShell에 붙여넣고 실행
+[PM2] You have to run this command as Administrator:
+    $ C:\Users\yourname\AppData\Roaming\npm\node_modules\pm2\bin\pm2.cmd startup windows -u yourname --hp C:\Users\yourname
+$ pm2 save
+$ pm2 list, 재부팅 후 pm2 list 확인
+- 위 방법이 실패했을 경우, Task Scheduler에서 작업 등록 - Create Task - 이름: PM2 Startup - 로그온 할 때 - 프로그램 시작 - pm2-startup.bat
+--- pm2-startup.bat 파일 생성
+@echo off
+:: Node 경로 (환경에 따라 다를 수 있음)
+set PATH=C:\Program Files\nodejs;%PATH%
+
+:: PM2 실행 및 복구
+pm2 resurrect
+---
+
+### PM2 관리 명령어
+$ pm2 monit (프로세스 모니터링)
+$ pm2 stop (프로세스 중지)
+$ pm2 delete (프로세스 삭제)
+$ pm2-service-uninstall (pm2 서비스 제거)

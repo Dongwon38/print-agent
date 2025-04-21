@@ -1,22 +1,31 @@
 // 250417, 로그인 테스트까지 끝난 버전, NOC에 직접 가서 테스트 해야 하는 버전
 // node print-agent.js USERNAME PASSWORD, 백엔드에서 설정한 로그인 유효기간 = 30 days
-
+// 250421, 새로 테스트해야하는 버전
+// 250421, 토큰 암호화 및 자동 로그인 기능 추가
 
 const express = require("express");
 const http = require("http");
 const axios = require("axios");
 const escpos = require("escpos");
 escpos.USB = require("escpos-usb");
+const keytar = require("keytar");
+const crypto = require("crypto");
 require("dotenv").config();
 
 const app = express();
 const server = http.createServer(app);
 
-// 환경 변수 설정
+// 환경 변수 설정 및 유효성 검사
 const API_URL = process.env.KTR_API_URL;
-const PORT = process.env.PORT || 3000;
-const GSTNumber = "792992869";
-const MAX_LINE_CHARS = 48;
+const PORT = parseInt(process.env.PORT, 10);
+const GSTNumber = process.env.GST_NUMBER;
+const MAX_LINE_CHARS = parseInt(process.env.MAX_LINE_CHARS, 10);
+const ENCRYPTION_SECRET = process.env.PRINTER_ENCRYPTION_SECRET;
+
+if (!API_URL || !PORT || !GSTNumber || !MAX_LINE_CHARS || !ENCRYPTION_SECRET) {
+  console.log("Missing required environment variables (KTR_API_URL, PORT, GST_NUMBER, MAX_LINE_CHARS, PRINTER_ENCRYPTION_SECRET)");
+  process.exit(1);
+}
 
 // 프린터 설정
 const VENDOR_ID = parseInt(process.env.PRINTER_VENDOR_ID, 16);
@@ -48,16 +57,8 @@ const device = new escpos.USB(
 const options = { encoding: "GB18030" };
 let printer = null;
 
-let JWT_TOKEN = null;
+let encryptedJwtToken = null;
 let pollingInterval = null;
-
-// 커맨드 라인 인자 처리
-const [,, username, password] = process.argv; // node print-agent.js username password
-
-if (!username || !password) {
-  console.error("Usage: node print-agent.js <username> <password>");
-  process.exit(1);
-}
 
 // 로그 파일로 출력
 function log(message) {
@@ -65,8 +66,65 @@ function log(message) {
   const logMessage = `[${timestamp}] ${message}\n`;
   console.log(logMessage);
   require("fs").appendFile("server.log", logMessage, (err) => {
-    if (err) console.error(`Failed to write log: ${err.message}`);
+    if (err) console.error(`Failed to write log: ${err.message || err}`);
   });
+}
+
+// JWT_TOKEN 암호화 및 복호화
+function encryptToken(token) {
+  const cipher = crypto.createCipher("aes-256-cbc", ENCRYPTION_SECRET);
+  let encrypted = cipher.update(token, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  return encrypted;
+}
+
+function decryptToken(encryptedToken) {
+  const decipher = crypto.createDecipher("aes-256-cbc", ENCRYPTION_SECRET);
+  let decrypted = decipher.update(encryptedToken, "hex", "utf8");
+  decrypted += decipher.final("utf8");
+  return decrypted;
+}
+
+// 자격 증명 저장
+async function saveCredentials(username, password) {
+  await keytar.setPassword("print-agent-ktr", "credentials", JSON.stringify({ username, password }));
+  log("Credentials saved successfully in Windows Credential Manager");
+}
+
+// 자격 증명 읽기
+async function getCredentials() {
+  const creds = await keytar.getPassword("print-agent-ktr", "credentials");
+  if (!creds) {
+    throw new Error("Credentials not found in Windows Credential Manager");
+  }
+  return JSON.parse(creds);
+}
+
+// 자동 로그인 및 토큰 갱신
+async function autoLogin(attempt = 1, maxAttempts = 3) {
+  const { username, password } = await getCredentials();
+  try {
+    log(`Attempting auto-login (attempt ${attempt}/${maxAttempts})...`);
+    const response = await axios.post(
+      `${API_URL}/login`,
+      { username, password },
+      { headers: { "Content-Type": "application/json" }, withCredentials: true }
+    );
+    const token = response.data.token;
+    encryptedJwtToken = encryptToken(token);
+    log("Auto-login successful");
+    return true;
+  } catch (error) {
+    const errorMsg = error.response?.data?.message || error.message;
+    log(`Auto-login failed: ${errorMsg}`);
+    if (attempt < maxAttempts) {
+      log(`Retrying auto-login in 5 seconds...`);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      return autoLogin(attempt + 1, maxAttempts);
+    }
+    log(`Max login attempts (${maxAttempts}) reached`);
+    return false;
+  }
 }
 
 // 프린터 초기화
@@ -449,6 +507,7 @@ async function printKitchenReceipt(order) {
 
 // 동적 데이터로 영수증 출력
 async function printOrder(order) {
+  let printerClosed = false;
   try {
     let cart = [];
     if (order.cart) {
@@ -467,10 +526,11 @@ async function printOrder(order) {
     await printKitchenReceipt(order);
 
     try {
+      const token = decryptToken(encryptedJwtToken);
       await axios.post(
         `${API_URL}/update-print-status`,
         { order_id: order.id, print_status: "printed" },
-        { headers: { Cookie: `jwt_token=${JWT_TOKEN}` } }
+        { headers: { Cookie: `jwt_token=${token}` } }
       );
     } catch (error) {
       log(`Failed to update print status for order #${order.id}: ${error.message}`);
@@ -480,41 +540,44 @@ async function printOrder(order) {
     log(`Order #${order.order_number} printed successfully`);
   } catch (error) {
     log(`Error printing order #${order.order_number || "N/A"}: ${error.message}`);
-  }
-}
-
-// 자동 로그인 및 토큰 갱신
-async function autoLogin() {
-  if (!username || !password) {
-    log("Username or password missing from command line arguments");
-    process.exit(1);
-  }
-
-  try {
-    log("Attempting auto-login...");
-    const response = await axios.post(
-      `${API_URL}/login`,
-      { username, password },
-      { headers: { "Content-Type": "application/json" }, withCredentials: true }
-    );
-    JWT_TOKEN = response.data.token;
-    log(`Auto-login successful, JWT_TOKEN: ${JWT_TOKEN}`);
-  } catch (error) {
-    log(`Auto-login failed: ${error.response?.data?.message || error.message}`);
-    process.exit(1);
+  } finally {
+    if (printer && !printerClosed) {
+      try {
+        await new Promise((resolve, reject) => {
+          printer.flush((err) => {
+            if (err) {
+              log(`Failed to flush printer buffer: ${err.message}`);
+              reject(err);
+            } else {
+              printer.close(() => {
+                log("Printer closed successfully");
+                printerClosed = true;
+                resolve();
+              });
+            }
+          });
+        });
+      } catch (error) {
+        log(`Error closing printer: ${error.message}`);
+      }
+    }
   }
 }
 
 // API 폴링
 async function pollOrders() {
-  if (!JWT_TOKEN) {
-    await autoLogin();
-    if (!JWT_TOKEN) return;
+  if (!encryptedJwtToken) {
+    const loginSuccess = await autoLogin();
+    if (!loginSuccess) {
+      log("Failed to login after max attempts, exiting...");
+      process.exit(1);
+    }
   }
 
   try {
+    const token = decryptToken(encryptedJwtToken);
     const response = await axios.get(`${API_URL}/pending-orders`, {
-      headers: { Cookie: `jwt_token=${JWT_TOKEN}` },
+      headers: { Cookie: `jwt_token=${token}` },
     });
     const orders = response.data || [];
     const time = new Date().toLocaleTimeString("en-US", { timeZone: "America/Vancouver" });
@@ -536,28 +599,46 @@ async function pollOrders() {
     log(`Failed to fetch orders: ${status || "Unknown"} - ${errorMsg}`);
     if (status === 401 || status === 403) {
       log("Token expired, attempting re-login...");
-      JWT_TOKEN = null;
-      await autoLogin();
-      if (JWT_TOKEN) {
+      encryptedJwtToken = null;
+      const loginSuccess = await autoLogin();
+      if (loginSuccess) {
         log("Re-login successful, resuming polling");
+        await pollOrders();
       } else {
-        log("Re-login failed, exiting...");
+        log("Re-login failed after max attempts, exiting...");
         process.exit(1);
       }
+    } else {
+      log("Non-authentication error, continuing polling...");
     }
   }
 }
 
 // 초기화
 async function init() {
-  if (!username || !password) {
-    log("Required username and password are missing from command line arguments");
-    process.exit(1);
+  try {
+    const creds = await getCredentials();
+    log("Credentials found, proceeding with auto-login...");
+    const loginSuccess = await autoLogin();
+    if (!loginSuccess) {
+      throw new Error("Initial login failed after max attempts");
+    }
+  } catch (error) {
+    log("Credentials not found. Please provide username and password to save.");
+    const [,, username, password] = process.argv;
+    if (!username || !password) {
+      log("Usage: node print-agent.js <username> <password> (for first-time setup)");
+      process.exit(1);
+    }
+    await saveCredentials(username, password);
+    const loginSuccess = await autoLogin();
+    if (!loginSuccess) {
+      log("Initial login failed after max attempts, exiting...");
+      process.exit(1);
+    }
   }
-
   await initializePrinter();
-  await autoLogin();
-  if (!JWT_TOKEN) {
+  if (!encryptedJwtToken) {
     log("Failed to obtain token, exiting...");
     process.exit(1);
   }
